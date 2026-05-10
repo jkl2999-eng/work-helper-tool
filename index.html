@@ -1,47 +1,3 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <title>리시브 마감 자동화 시스템</title>
-    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
-    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
-    <style>
-        body { font-family: 'Malgun Gothic', sans-serif; padding: 20px; background-color: #f8f9fa; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        h2 { color: #007bff; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
-        .upload-box { border: 3px dashed #dee2e6; padding: 40px; text-align: center; margin: 20px 0; border-radius: 10px; }
-        button { background-color: #007bff; color: white; border: none; padding: 12px 25px; border-radius: 6px; font-weight: bold; cursor: pointer; }
-        button:disabled { background-color: #6c757d; }
-        #status { margin-top: 20px; padding: 15px; border-radius: 6px; display: none; }
-        .info { background-color: #e7f3ff; color: #004085; }
-        .error { background-color: #f8d7da; color: #721c24; }
-        #download-section { margin-top: 20px; display: none; text-align: center; border: 1px solid #ced4da; padding: 20px; border-radius: 10px; }
-    </style>
-</head>
-<body>
-
-<div class="container">
-    <h2>🚀 리시브 마감 자동 통합 도구</h2>
-    <p>양식 파일 1개와 소스 파일들을 한꺼번에 선택해 주세요.</p>
-    
-    <div class="upload-box">
-        <input type="file" id="file-input" multiple>
-        <br><br>
-        <button id="run-btn">데이터 주입 시작</button>
-    </div>
-
-    <div id="status"></div>
-    
-    <div id="download-section">
-        <p>✅ 모든 데이터가 양식 파일에 주입되었습니다!</p>
-        <button id="dl-btn" style="background-color: #28a745;">결과 파일 다운로드</button>
-    </div>
-</div>
-
-<py-config>
-    packages = ["pandas", "openpyxl"]
-</py-config>
-
 <script type="py">
 import pandas as pd
 import io
@@ -61,7 +17,7 @@ async def main_process(event):
     btn.disabled = True
     status.className = "status info"
     status.style.display = "block"
-    status.innerText = "파일 분류 및 분석 중..."
+    status.innerText = "데이터 정밀 분석 및 주입 중..."
     
     target_bytes = None
     source_files = []
@@ -69,17 +25,15 @@ async def main_process(event):
     new_skus = []
 
     try:
-        # 1단계: 파일 분류 (RCV Check 시트가 있는지로만 판단)
+        # 1단계: 파일 분류
         for file in files:
             array_buf = await file.arrayBuffer()
             content = io.BytesIO(Uint8Array.new(array_buf).to_py())
-            
-            # 시트 이름만 먼저 스캔
             xl = pd.ExcelFile(content)
             if "RCV Check" in xl.sheet_names:
-                target_bytes = content # 양식 파일로 확정
+                target_bytes = content
             else:
-                source_files.append(content) # 나머지는 소스 후보
+                source_files.append(content)
 
         if target_bytes is None:
             raise Exception("양식 파일을 찾을 수 없습니다. 'RCV Check' 시트 이름을 확인하세요.")
@@ -87,61 +41,81 @@ async def main_process(event):
         # 2단계: 소스 파일 데이터 추출
         for src in source_files:
             src.seek(0)
-            df = pd.read_excel(src)
+            # 모든 데이터를 문자열로 읽어서 데이터 누락 방지
+            df = pd.read_excel(src).astype(str)
             
-            # (A) TruckShipment (V열 온도)
-            if len(df.columns) >= 22 and "온도" in str(df.columns[21]):
-                # New SKU
-                mask_new = df.iloc[:, 21].astype(str).str.contains("NEW", na=False)
-                new_skus.extend(df[mask_new].iloc[:, 13].dropna().unique().tolist())
+            # (A) TruckShipment 처리: '온도'라는 단어가 포함된 열 찾기
+            temp_col = None
+            for col in df.columns:
+                if "온도" in str(col):
+                    temp_col = col
+                    break
+            
+            if temp_col is not None and len(df.columns) >= 20:
+                # NEW SKU 추출
+                mask_new = df[temp_col].str.contains("NEW", case=False, na=False)
+                # N열(13번 인덱스) 주변에서 SKUID 추출 (보통 13~14번째)
+                new_skus.extend(df[mask_new].iloc[:, 13].replace('nan', None).dropna().unique().tolist())
                 
-                # 냉동 데이터
-                mask_f = df.iloc[:, 21].astype(str).str.contains("냉동", na=False)
-                for _, row in df[mask_f].iterrows():
-                    combined_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
-            
-            # (B) PO_SKU_LIST (M열 온도)
-            elif len(df.columns) >= 14 and "온도" in str(df.columns[12]):
-                mask_p = (df.iloc[:, 12].astype(str).str.contains("냉동", na=False)) & \
-                         (df.iloc[:, 13].astype(str).str.contains("밀크런", na=False))
+                # 냉동 데이터 추출
+                mask_f = df[temp_col].str.contains("냉동", na=False)
+                target_df = df[mask_f]
+                for _, row in target_df.iterrows():
+                    combined_rows.append([
+                        row.iloc[1],  # 업체ID
+                        row.iloc[2],  # 업체명
+                        row.iloc[11], # 발주번호
+                        row.iloc[13], # SKU ID
+                        row.iloc[14], # 상품명
+                        row.iloc[20]  # 수량
+                    ])
+
+            # (B) PO_SKU_LIST 처리
+            elif len(df.columns) >= 13 and any("온도" in str(c) for c in df.columns[:15]):
+                # 온도 열 다시 찾기 (M열 부근)
+                p_temp_col = [c for c in df.columns if "온도" in str(c)][0]
+                p_type_col = df.columns[13] # 밀크런 여부 열
+                
+                mask_p = (df[p_temp_col].str.contains("냉동", na=False)) & \
+                         (df[p_type_col].str.contains("밀크런", na=False))
+                
                 for _, row in df[mask_p].iterrows():
-                    combined_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
+                    combined_rows.append([
+                        row.iloc[7], row.iloc[8], row.iloc[0], 
+                        row.iloc[2], row.iloc[6], row.iloc[25]
+                    ])
 
         # 3단계: 양식 파일에 데이터 쓰기
         target_bytes.seek(0)
+        if not combined_rows:
+            raise Exception("소스 파일에서 조건(냉동/밀크런)에 맞는 데이터를 찾지 못했습니다.")
+
         output_df = pd.DataFrame(combined_rows)
-        
-        # openpyxl로 기존 양식 보존하며 데이터만 덮어쓰기
         with pd.ExcelWriter(target_bytes, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
             output_df.to_excel(writer, sheet_name='RCV Check', startrow=1, index=False, header=False)
         
-        # 4단계: 다운로드 준비
+        # 4단계: 결과 전송
         target_bytes.seek(0)
         blob = Blob.new([Uint8Array.new(target_bytes.read())], { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
         url = URL.createObjectURL(blob)
         
-        status.innerText = f"성공! 총 {len(combined_rows)}행을 주입했습니다."
-        if new_skus: status.innerText += f" (New SKU: {len(set(new_skus))}건)"
-        
+        status.innerText = f"성공! {len(combined_rows)}행을 주입했습니다."
         dl_section.style.display = "block"
         
         def dl_click(e):
             a = document.createElement("a")
             a.href = url
-            a.download = "RCV_결과파일.xlsx"
+            a.download = "RCV_결과물.xlsx"
             a.click()
-            
         from pyodide.ffi import create_proxy
         document.getElementById("dl-btn").onclick = create_proxy(dl_click)
 
     except Exception as e:
         status.className = "status error"
-        status.innerText = f"오류 발생: {str(e)}"
+        status.innerText = f"오류: {str(e)}"
     finally:
         btn.disabled = False
 
 from pyodide.ffi import create_proxy
 document.getElementById("run-btn").addEventListener("click", create_proxy(main_process))
 </script>
-</body>
-</html>
