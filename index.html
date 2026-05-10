@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>리시브 마감 자동화 도구</title>
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; padding: 20px; background-color: #f4f7f9; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+        h2 { color: #1e88e5; text-align: center; }
+        .file-box { border: 2px dashed #ddd; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
+        .file-input { margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
+        button { padding: 15px; background-color: #1e88e5; color: white; border: none; cursor: pointer; border-radius: 8px; width: 100%; font-size: 18px; font-weight: bold; }
+        #status { margin-top: 20px; padding: 15px; border-radius: 8px; display: block; text-align: center; background-color: #f8f9fa; border: 1px solid #eee; }
+        .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; border-radius: 4px; }
+        .sku-count { margin-top: 10px; font-weight: bold; color: #d32f2f; border-top: 1px solid #fbc02d; padding-top: 5px; }
+        #download_area { display: none; margin-top: 30px; text-align: center; padding: 20px; border: 2px solid #4caf50; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🚀 리시브 마감 자동화</h2>
+    <div id="status">⏳ 시스템 초기화 중... (최초 로딩은 인터넷이 필요합니다)</div>
+
+    <div class="file-box">
+        <div class="file-input"><span>1. 마감 양식(.xlsx)</span> <input type="file" id="target_file"></div>
+        <div class="file-input"><span>2. 검품 내역(.xlsx)</span> <input type="file" id="check_file"></div>
+        <div class="file-input"><span>3. TruckShipment(.xlsx)</span> <input type="file" id="ts_file"></div>
+        <div class="file-input"><span>4. PO_SKU_LIST(.xlsx)</span> <input type="file" id="po_file"></div>
+    </div>
+    
+    <button id="run_btn">🚀 공정 시작</button>
+    
+    <div id="sku_result" class="new-sku-box"></div>
+    <div id="download_area">
+        <p>🎉 작업이 완료되었습니다!</p>
+        <a id="download_link" style="font-size: 20px; color: #2e7d32; font-weight: bold; text-decoration: none;">📥 [ 마감완료 파일 다운로드 ]</a>
+    </div>
+</div>
+
+<py-config>
+    packages = ["pandas", "openpyxl"]
+</py-config>
+
+<script type="py">
+import pandas as pd
+import openpyxl
+import asyncio
+from js import Uint8Array, File, URL, document, Blob
+import io
+
+# 초기화 완료 알림
+document.getElementById("status").innerHTML = "✅ 준비 완료! 파일을 선택하고 공정 시작을 눌러주세요."
+
+async def process_files(event):
+    status = document.getElementById("status")
+    sku_div = document.getElementById("sku_result")
+    status.style.display = "block"
+    sku_div.style.display = "none"
+    status.innerHTML = "⏳ 공정을 시작합니다..."
+    status.style.backgroundColor = "#fff3cd"
+
+    try:
+        # 1. 파일 읽기
+        status.innerHTML = "⏳ 파일을 분석 중입니다..."
+        await asyncio.sleep(0.1)
+
+        async def get_df(elem_id):
+            file_el = document.getElementById(elem_id)
+            if not file_el.files or file_el.files.length == 0: return None
+            array_buf = await file_el.files.item(0).arrayBuffer()
+            return pd.read_excel(io.BytesIO(array_buf.to_py())).dropna(how='all')
+
+        df_target_raw = await document.getElementById("target_file").files.item(0).arrayBuffer()
+        dfs = {
+            "검품 내역": await get_df("check_file"),
+            "TruckShipment": await get_df("ts_file"),
+            "PO_SKU_LIST": await get_df("po_file")
+        }
+
+        for key in dfs:
+            if dfs[key] is not None:
+                dfs[key].columns = [str(c).strip().upper().replace(" ", "") for c in dfs[key].columns]
+
+        # 2. New SKU 추출 및 개수 표시
+        df_ts = dfs["TruckShipment"]
+        temp_col = next((c for c in df_ts.columns if "온도" in c), None)
+        id_col = next((c for c in df_ts.columns if "SKUID" in c), None)
+        
+        if temp_col and id_col:
+            mask = df_ts[temp_col].astype(str).str.contains('NEW', case=False, na=False)
+            found_ids = df_ts.loc[mask, id_col].dropna().apply(lambda x: str(int(float(x)))).unique().tolist()
+            if found_ids:
+                sku_div.style.display = "block"
+                sku_div.innerHTML = f"""
+                    📢 <b>New SKU 발견 리스트:</b><br>
+                    {', '.join(found_ids)}
+                    <div class="sku-count">👉 총 {len(found_ids)}개의 New SKU가 발견되었습니다.</div>
+                """
+
+        # 3. 데이터 주입
+        status.innerHTML = "⏳ 양식 시트에 데이터를 주입하는 중..."
+        await asyncio.sleep(0.1)
+        wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()))
+        
+        def fill_safe(s_name, df_source):
+            if s_name not in wb.sheetnames or df_source is None: return
+            ws = wb[s_name]
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                for cell in row:
+                    if cell.data_type != 'f': cell.value = None
+            
+            headers = {str(ws.cell(1, c).value).strip().upper().replace(" ", ""): c for c in range(1, ws.max_column + 1)}
+            for r_idx, row_dict in enumerate(df_source.to_dict('records'), 2):
+                for col_name, val in row_dict.items():
+                    if col_name in headers:
+                        cell = ws.cell(r_idx, headers[col_name])
+                        if cell.data_type != 'f': cell.value = val if pd.notna(val) else ""
+
+        for s in ['검품 내역', 'TruckShipment', 'PO_SKU_LIST']:
+            fill_safe(s, dfs[s])
+            await asyncio.sleep(0.05)
+
+        # 4. RCV Check 로직
+        status.innerHTML = "⏳ RCV Check 데이터를 생성하는 중..."
+        await asyncio.sleep(0.1)
+        ws_rcv = wb['RCV Check']
+        if ws_rcv.max_row >= 2: ws_rcv.delete_rows(2, ws_rcv.max_row)
+
+        ts_f = df_ts[df_ts[temp_col].astype(str).str.contains('냉동', na=False)] if temp_col else df_ts
+        df_po = dfs["PO_SKU_LIST"]
+        po_temp = next((c for c in df_po.columns if "온도" in c), None)
+        po_type = next((c for c in df_po.columns if "운송" in c), None)
+        po_f = df_po
+        if po_temp: po_f = po_f[po_f[po_temp].astype(str).str.contains('냉동', na=False)]
+        if po_type: po_f = po_f[po_f[po_type].astype(str).str.contains('밀크런', na=False)]
+
+        def get_val(row, keywords, cols):
+            for k in keywords:
+                for col in cols:
+                    if k.upper() in col.upper(): return row[col]
+            return ""
+
+        curr_r = 2
+        for _, row in ts_f.iterrows():
+            ws_rcv.cell(curr_r, 1, get_val(row, ["업체ID"], ts_f.columns))
+            ws_rcv.cell(curr_r, 2, get_val(row, ["업체명"], ts_f.columns))
+            ws_rcv.cell(curr_r, 3, get_val(row, ["발주번호"], ts_f.columns))
+            ws_rcv.cell(curr_r, 4, get_val(row, ["SKUID"], ts_f.columns))
+            ws_rcv.cell(curr_r, 5, get_val(row, ["SKU명", "상품명", "SKU이름"], ts_f.columns))
+            ws_rcv.cell(curr_r, 6, get_val(row, ["입고수량"], ts_f.columns))
+            curr_r += 1
+
+        for _, row in po_f.iterrows():
+            ws_rcv.cell(curr_r, 1, get_val(row, ["업체ID"], po_f.columns))
+            ws_rcv.cell(curr_r, 2, get_val(row, ["업체명"], po_f.columns))
+            ws_rcv.cell(curr_r, 3, get_val(row, ["발주번호"], po_f.columns))
+            ws_rcv.cell(curr_r, 4, get_val(row, ["SKUID"], po_f.columns))
+            ws_rcv.cell(curr_r, 5, get_val(row, ["SKU이름", "SKU명", "상품명"], po_f.columns))
+            ws_rcv.cell(curr_r, 6, get_val(row, ["업체확정"], po_f.columns))
+            curr_r += 1
+
+        # 5. 최종 저장[cite: 1]
+        status.innerHTML = "⏳ 결과 파일을 생성 중입니다..."
+        await asyncio.sleep(0.1)
+        out_buf = io.BytesIO()
+        wb.save(out_buf)
+        blob = Blob.new([Uint8Array.new(out_buf.getvalue())], { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
+        
+        link = document.getElementById("download_link")
+        link.href = URL.createObjectURL(blob)
+        link.download = "마감완료_최종.xlsx"
+        document.getElementById("download_area").style.display = "block"
+        status.innerHTML = "✅ 모든 작업이 완료되었습니다!"
+        status.style.backgroundColor = "#c8e6c9"
+
+    except Exception as e:
+        status.innerHTML = f"❌ 오류 발생: {str(e)}"
+        status.style.backgroundColor = "#ffcdd2"
+
+document.getElementById("run_btn").onclick = process_files
+</script>
+</body>
+</html>
