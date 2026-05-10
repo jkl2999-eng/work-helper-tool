@@ -2,52 +2,51 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>RCV 자동화 시스템</title>
+    <title>리시브 마감 자동화 시스템</title>
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
     <style>
-        html, body { height: 100%; margin: 0; display: flex; justify-content: center; align-items: center; background-color: #f0f2f5; }
-        .container { width: 90%; max-width: 500px; background: #ffffff; padding: 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); text-align: center; }
-        h2 { color: #1a73e8; margin-bottom: 20px; }
-        .file-group { text-align: left; margin-bottom: 12px; padding: 12px; border: 1px solid #e8eaed; border-radius: 8px; background: #fafafa; }
-        .file-group label { display: block; font-weight: bold; margin-bottom: 6px; color: #5f6368; font-size: 13px; }
+        html, body { height: 100%; margin: 0; display: flex; justify-content: center; align-items: center; background-color: #f0f2f5; font-family: 'Malgun Gothic', sans-serif; }
+        .container { width: 95%; max-width: 550px; background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); text-align: center; }
+        h2 { color: #1e88e5; margin-bottom: 25px; }
+        .file-input-group { text-align: left; background: #fafafa; padding: 15px; border-radius: 10px; border: 1px solid #eee; margin-bottom: 15px; }
+        .file-input-group label { display: block; font-weight: bold; margin-bottom: 8px; color: #555; font-size: 13px; }
         input[type="file"] { width: 100%; font-size: 12px; }
-        button { width: 100%; background-color: #1a73e8; color: white; border: none; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
-        button:disabled { background-color: #dadce0; cursor: not-allowed; }
-        #status { margin-top: 15px; padding: 12px; border-radius: 6px; display: none; font-size: 14px; font-weight: bold; border: 1px solid #1a73e8; background-color: #e8f0fe; color: #1967d2; }
-        .error { background-color: #fce8e6 !important; color: #c5221f !important; border: 1px solid #c5221f !important; }
-        #new-sku-area { display:none; background-color: #fff4e5; border-left: 5px solid #ffa000; padding: 12px; margin-top: 15px; text-align: left; font-size: 13px; }
-        #download-area { margin-top: 20px; display: none; padding: 15px; border: 2px solid #34a853; border-radius: 8px; }
+        button { width: 100%; padding: 15px; background-color: #1e88e5; color: white; border: none; border-radius: 8px; font-size: 17px; font-weight: bold; cursor: pointer; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #status { margin-top: 20px; padding: 12px; border-radius: 8px; display: none; font-size: 14px; font-weight: bold; border: 1px solid #1e88e5; background: #e3f2fd; color: #1565c0; }
+        .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; text-align: left; border-radius: 4px; font-size: 13px; }
+        #download_area { display: none; margin-top: 20px; padding: 20px; border: 2px solid #4caf50; border-radius: 8px; background: #f1f8e9; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>📦 RCV 자동 통합</h2>
-    <div class="file-group"><label>📁 1. 통합 양식 파일</label><input type="file" id="target-file"></div>
-    <div class="file-group"><label>📄 2. TruckShipment</label><input type="file" id="src-ts"></div>
-    <div class="file-group"><label>📋 3. PO_SKU_LIST</label><input type="file" id="src-po"></div>
-    <div class="file-group"><label>📑 4. 검품내역</label><input type="file" id="src-check"></div>
+    <h2>🚀 RCV 마감 자동화</h2>
+    
+    <div class="file-input-group"><label>📁 1. 마감 양식 (.xlsx)</label><input type="file" id="target_file"></div>
+    <div class="file-input-group"><label>📄 2. TruckShipment (.xlsx)</label><input type="file" id="ts_file"></div>
+    <div class="file-input-group"><label>📋 3. PO_SKU_LIST (.xlsx)</label><input type="file" id="po_file"></div>
+    <div class="file-input-group"><label>📑 4. 검품 내역 (.xlsx)</label><input type="file" id="actual_check_file"></div>
 
-    <button id="run-btn" onclick="preProcess()">분석 및 통합 시작</button>
+    <button id="run_btn" onclick="startLoading()">공정 시작</button>
 
     <div id="status"></div>
-    <div id="new-sku-area"><strong>📢 [New SKU 감지]</strong><br><span id="new-sku-list"></span></div>
-    <div id="download-area"><p style="color: #2e7d32; font-weight: bold;">✅ 통합 완료!</p><button id="dl-btn" style="background-color: #34a853;">파일 다운로드</button></div>
+    <div id="sku_result" class="new-sku-box"></div>
+    
+    <div id="download_area">
+        <p style="color: #2e7d32; font-weight: bold;">🎉 모든 작업이 완료되었습니다!</p>
+        <a id="download_link" style="display: block; padding: 10px; background: #4caf50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">📥 결과 파일 다운로드</a>
+    </div>
 </div>
 
 <script>
-    function preProcess() {
+    function startLoading() {
         const s = document.getElementById("status");
-        const b = document.getElementById("run-btn");
         s.style.display = "block";
-        s.className = "info";
-        s.innerText = "⏳ 데이터 분석 중... 잠시만 기다려주세요.";
-        b.disabled = true;
-        
-        setTimeout(() => {
-            window.dispatchEvent(new CustomEvent('start-python-logic'));
-        }, 100);
+        s.innerText = "⏳ 데이터 분석 중... (최대 10초 소요)";
+        document.getElementById("run_btn").disabled = true;
+        setTimeout(() => { window.dispatchEvent(new CustomEvent('start-process')); }, 100);
     }
 </script>
 
@@ -57,115 +56,109 @@
 
 <script type="py">
 import pandas as pd
+import openpyxl
 import io
-from pyscript import window
-from js import document, Uint8Array, Blob, URL, CustomEvent
+import asyncio
+from js import Uint8Array, URL, document, Blob
 
-async def python_logic(event):
+async def run_process(event):
     status = document.getElementById("status")
-    dl_area = document.getElementById("download-area")
-    sku_area = document.getElementById("new-sku-area")
-    btn = document.getElementById("run-btn")
-
+    sku_div = document.getElementById("sku_result")
+    dl_area = document.getElementById("download_area")
+    
     try:
-        f_target = document.getElementById("target-file").files.item(0)
-        f_ts = document.getElementById("src-ts").files.item(0)
-        f_po = document.getElementById("src-po").files.item(0)
-        f_check = document.getElementById("src-check").files.item(0)
+        # 1. 파일 객체 확보
+        f_target = document.getElementById("target_file").files.item(0)
+        f_ts = document.getElementById("ts_file").files.item(0)
+        f_po = document.getElementById("po_file").files.item(0)
+        f_check = document.getElementById("actual_check_file").files.item(0)
 
         if not all([f_target, f_ts, f_po, f_check]):
-            window.alert("4개의 파일을 모두 선택해 주세요!"); status.style.display = "none"; btn.disabled = False; return
+            window.alert("4개의 파일을 모두 선택해야 합니다!")
+            return
 
-        rcv_rows = []
-        ts_full_rows = []
-        check_full_rows = []
+        async def load_df(f):
+            buf = await f.arrayBuffer()
+            df = pd.read_excel(io.BytesIO(buf.to_py())).astype(str) # 전체를 문자로 읽어 인식 오류 방지
+            df.columns = [str(c).strip().upper().replace(" ", "") for c in df.columns]
+            return df
+
+        df_ts = await load_df(f_ts)
+        df_po = await load_df(f_po)
+        df_check = await load_df(f_check)
+        
+        rcv_data = []
         new_skus = []
 
-        # 1. TruckShipment 분석
-        ts_buf = await f_ts.arrayBuffer()
-        ts_df = pd.read_excel(io.BytesIO(Uint8Array.new(ts_buf).to_py())).astype(str)
-        # 모든 데이터 공백 제거 (인식률 향상)
-        ts_df = ts_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+        # 2. 데이터 분석 (키워드 매칭 방식)
+        # (A) TruckShipment 분석
+        ts_temp_col = next((c for c in df_ts.columns if "온도" in c), None)
+        ts_id_col = next((c for c in df_ts.columns if "SKUID" in c or "상품코드" in c), None)
         
-        t_idx = 21 if len(ts_df.columns) > 21 else len(ts_df.columns) - 1
-        ts_full_rows = ts_df.values.tolist()
+        if ts_temp_col:
+            # New SKU 추출 (V열에 'NEW' 포함)
+            mask_new = df_ts[ts_temp_col].str.contains('NEW', case=False, na=False)
+            new_skus = df_ts.loc[mask_new, ts_id_col].unique().tolist() if ts_id_col else []
+            
+            # 냉동 필터링
+            ts_f = df_ts[df_ts[ts_temp_col].str.contains('냉동', na=False)]
+            for _, r in ts_f.iterrows():
+                # 업체ID(1), 업체명(2), 발주번호(11), SKUID(13), SKU명(14), 입고수량(20)
+                rcv_data.append([r.iloc[1], r.iloc[2], r.iloc[11], r.iloc[13], r.iloc[14], r.iloc[20]])
 
-        # NEW 및 냉동 필터링 (글자 포함 여부로 체크)
-        for _, row in ts_df.iterrows():
-            temp_val = str(row.iloc[t_idx])
-            if "NEW" in temp_val.upper():
-                new_skus.append(row.iloc[13])
-            if "냉동" in temp_val:
-                rcv_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
-
-        # 2. PO_SKU_LIST 분석
-        po_buf = await f_po.arrayBuffer()
-        po_df = pd.read_excel(io.BytesIO(Uint8Array.new(po_buf).to_py())).astype(str)
-        po_df = po_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+        # (B) PO_SKU_LIST 분석
+        po_temp_col = next((c for c in df_po.columns if "온도" in c), None)
+        po_milk_col = next((c for c in df_po.columns if "운송" in c or "밀크런" in c or "유형" in c), None)
         
-        p_t_cols = [i for i, c in enumerate(po_df.columns) if "온도" in str(c)]
-        p_idx = p_t_cols[0] if p_t_cols else 19
+        if po_temp_col and po_milk_col:
+            po_f = df_po[df_po[po_temp_col].str.contains('냉동', na=False) & df_po[po_milk_col].str.contains('밀크런', na=False)]
+            for _, r in po_f.iterrows():
+                # 업체ID(7), 업체명(8), 발주번호(0), SKUID(2), SKU명(6), 업체확정수량(25)
+                rcv_data.append([r.iloc[7], r.iloc[8], r.iloc[0], r.iloc[2], r.iloc[6], r.iloc[25]])
+
+        # 3. 양식 시트 주입
+        target_buf = await f_target.arrayBuffer()
+        wb = openpyxl.load_workbook(io.BytesIO(target_buf.to_py()))
         
-        for _, row in po_df.iterrows():
-            p_temp = str(row.iloc[p_idx])
-            p_milk = str(row.iloc[13])
-            if "냉동" in p_temp and "밀크런" in p_milk:
-                rcv_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
-
-        # 3. 검품내역 분석
-        c_buf = await f_check.arrayBuffer()
-        c_df = pd.read_excel(io.BytesIO(Uint8Array.new(c_buf).to_py())).astype(str)
-        check_full_rows = c_df.values.tolist()
-
-        # 4. 양식 주입
-        from openpyxl import load_workbook
-        target_io = io.BytesIO(Uint8Array.new(await f_target.arrayBuffer()).to_py())
-        wb = load_workbook(target_io)
-
-        # [함수] 시트 데이터 초기화 및 주입
-        def update_sheet(sheet_name, data, max_col, start_row=2):
+        # [공통] 시트 청소 및 주입 함수
+        def fill_sheet(sheet_name, data_list, max_col=10):
             if sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
-                # 기존 데이터 삭제
-                for r in ws.iter_rows(min_row=start_row, max_row=ws.max_row + 100, min_col=1, max_col=max_col):
-                    for c in r: c.value = None
-                # 새 데이터 주입
-                for i, r_data in enumerate(data, start=start_row):
-                    for j, val in enumerate(r_data, start=1):
-                        ws.cell(row=i, column=j, value=val)
+                for row in ws.iter_rows(min_row=2, max_row=ws.max_row+50, min_col=1, max_col=max_col):
+                    for cell in row: cell.value = None
+                for i, row_vals in enumerate(data_list, 2):
+                    for j, val in enumerate(row_vals, 1):
+                        ws.cell(row=i, column=j, value=val if val != 'nan' else "")
 
-        # 각 시트 주입 실행
-        update_sheet('RCV Check', rcv_rows, 6)
+        # 시트별 주입 실행
+        fill_sheet('RCV Check', rcv_data, 6)
         
-        ts_sheet = 'TRUCKSHIPMENT' if 'TRUCKSHIPMENT' in wb.sheetnames else 'TruckShipment'
-        update_sheet(ts_sheet, ts_full_rows, len(ts_df.columns))
+        ts_name = 'TRUCKSHIPMENT' if 'TRUCKSHIPMENT' in wb.sheetnames else 'TruckShipment'
+        fill_sheet(ts_name, df_ts.values.tolist(), len(df_ts.columns))
         
-        update_sheet('검품내역', check_full_rows, 10)
+        fill_sheet('검품내역', df_check.values.tolist(), len(df_check.columns))
 
-        output = io.BytesIO()
-        wb.save(output); output.seek(0)
-
-        # UI 업데이트
+        # 4. 결과 출력
         if new_skus:
-            sku_area.style.display = "block"
-            document.getElementById("new-sku-list").innerText = ", ".join(set([str(s) for s in new_skus if s and s != 'nan']))
+            sku_div.style.display = "block"
+            sku_div.innerHTML = f"📢 <b>New SKU 발견 ({len(new_skus)}건):</b> {', '.join([str(s) for s in new_skus if s != 'nan'])}"
 
-        url = URL.createObjectURL(Blob.new([Uint8Array.new(output.read())], {"type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}))
-        status.innerText = f"✅ 통합 완료! (RCV용 데이터: {len(rcv_rows)}건)"
-        dl_area.style.display = "block"
+        out = io.BytesIO()
+        wb.save(out)
+        blob = Blob.new([Uint8Array.new(out.getvalue())], {"type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"})
         
-        def dl_handler(e):
-            a = document.createElement("a"); a.href = url; a.download = "RCV_결과.xlsx"; a.click()
-        from pyodide.ffi import create_proxy
-        document.getElementById("dl-btn").onclick = create_proxy(dl_handler)
+        link = document.getElementById("download_link")
+        link.href = URL.createObjectURL(blob)
+        link.download = "RCV_마감결과_최종.xlsx"
+        dl_area.style.display = "block"
+        status.innerText = f"✅ 주입 완료! (RCV용 데이터: {len(rcv_data)}건)"
 
     except Exception as e:
-        status.className = "error"; status.innerText = f"❌ 오류: {str(e)}"
-    finally:
-        btn.disabled = False
+        status.innerText = f"❌ 오류 발생: {str(e)}"
+        document.getElementById("run_btn").disabled = False
 
 from pyodide.ffi import create_proxy
-window.addEventListener('start-python-logic', create_proxy(python_logic))
+window.addEventListener('start-process', create_proxy(run_process))
 </script>
 </body>
 </html>
