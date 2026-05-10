@@ -1,45 +1,18 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <title>리시브 마감 자동화 시스템</title>
-    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
-    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
-    <style>
-        body { font-family: 'Malgun Gothic', sans-serif; padding: 20px; background-color: #f4f7f6; color: #333; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        .file-group { margin-bottom: 15px; padding: 15px; border: 1px solid #e1e4e8; border-radius: 8px; background-color: #fafafa; }
-        .file-group label { display: block; font-weight: bold; margin-bottom: 8px; color: #1a73e8; }
-        button { width: 100%; background-color: #1a73e8; color: white; border: none; padding: 15px; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        button:hover { background-color: #1557b0; }
-        #status { margin-top: 20px; padding: 15px; border-radius: 6px; display: none; text-align: center; font-weight: bold; }
-        .info { background-color: #e8f0fe; color: #1967d2; }
-        #download-area { margin-top: 20px; display: none; text-align: center; padding: 20px; border: 2px solid #34a853; border-radius: 8px; }
-    </style>
-</head>
-<body>
-
 <div class="container">
-    <h2>🚀 리시브 마감 자동 통합 (4개 파일 구성)</h2>
+    <h2>🚀 리시브 마감 자동 통합 (New SKU 감지 포함)</h2>
     
-    <div class="file-group">
-        <label>📁 1. 통합 양식 파일 (RCV Check 시트 포함)</label>
-        <input type="file" id="target-file" accept=".xlsx">
-    </div>
-    <div class="file-group">
-        <label>📄 2. TruckShipment (냉동 데이터 추출)</label>
-        <input type="file" id="src-ts" accept=".xlsx">
-    </div>
-    <div class="file-group">
-        <label>📋 3. PO_SKU_LIST (밀크런 데이터 추출)</label>
-        <input type="file" id="src-po" accept=".xlsx">
-    </div>
-    <div class="file-group">
-        <label>📑 4. 검품내역 (데이터 추출)</label>
-        <input type="file" id="src-check" accept=".xlsx">
-    </div>
+    <div class="file-group"><label>📁 1. 통합 양식 파일 (RCV Check 시트 포함)</label><input type="file" id="target-file" accept=".xlsx"></div>
+    <div class="file-group"><label>📄 2. TruckShipment (냉동 및 New SKU 추출)</label><input type="file" id="src-ts" accept=".xlsx"></div>
+    <div class="file-group"><label>📋 3. PO_SKU_LIST (밀크런 데이터 추출)</label><input type="file" id="src-po" accept=".xlsx"></div>
+    <div class="file-group"><label>📑 4. 검품내역 (데이터 추출)</label><input type="file" id="src-check" accept=".xlsx"></div>
 
     <button id="run-btn">분석 및 양식에 주입 시작</button>
+
+    <div id="new-sku-area" style="display:none; background-color: #fff4e5; border-left: 5px solid #ffa000; padding: 15px; margin-top: 20px; border-radius: 4px;">
+        <strong style="color: #e67e22;">📢 [New SKU 감지]</strong><br>
+        보안 사이트에서 먼저 조회해야 할 SKUID:<br>
+        <span id="new-sku-list" style="font-weight: bold; word-break: break-all;"></span>
+    </div>
 
     <div id="status"></div>
     <div id="download-area">
@@ -61,8 +34,9 @@ from js import document, Uint8Array, Blob, URL
 async def process(event):
     status = document.getElementById("status")
     dl_area = document.getElementById("download-area")
+    sku_area = document.getElementById("new-sku-area")
+    sku_list_span = document.getElementById("new-sku-list")
     
-    # 1. 파일 입력 체크
     f_target = document.getElementById("target-file").files[0]
     f_ts = document.getElementById("src-ts").files[0]
     f_po = document.getElementById("src-po").files[0]
@@ -72,18 +46,25 @@ async def process(event):
         window.alert("4개의 파일을 모두 선택해 주세요!")
         return
 
-    status.className = "info"
+    status.className = "status info"
     status.style.display = "block"
-    status.innerText = "데이터 통합 중... 잠시만 기다려주세요."
+    status.innerText = "데이터 통합 중..."
+    sku_area.style.display = "none" # 초기화
 
     try:
         combined_rows = []
+        new_skus = []
 
         # --- A. TruckShipment (소스 1) ---
         ts_buf = await f_ts.arrayBuffer()
         ts_df = pd.read_excel(io.BytesIO(Uint8Array.new(ts_buf).to_py())).astype(str)
-        # 온도 열 찾아서 냉동 필터링
         t_col = [c for c in ts_df.columns if "온도" in str(c)][0]
+        
+        # 1. New SKU 추출 (V열에 NEW가 포함된 경우)
+        mask_new = ts_df[t_col].str.contains("NEW", case=False, na=False)
+        new_skus = ts_df[mask_new].iloc[:, 13].dropna().unique().tolist() # N열(SKUID)
+
+        # 2. 냉동 데이터 추출
         ts_f = ts_df[ts_df[t_col].str.contains("냉동", na=False)]
         for _, row in ts_f.iterrows():
             combined_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
@@ -98,29 +79,28 @@ async def process(event):
             combined_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
 
         # --- C. 검품내역 (소스 3) ---
-        # 검품내역의 경우 특정 조건 없이 필요한 열만 그대로 가져오도록 설정했습니다.
-        # 만약 검품내역에도 필터링 조건이 필요하다면 말씀해주세요!
         check_buf = await f_check.arrayBuffer()
         check_df = pd.read_excel(io.BytesIO(Uint8Array.new(check_buf).to_py())).astype(str)
         for _, row in check_df.iterrows():
-            # 검품내역의 열 순서에 따라 수정 필요할 수 있음 (현재는 상위 6개 열 예시)
             if len(row) >= 6:
                 combined_rows.append([row.iloc[0], row.iloc[1], row.iloc[2], row.iloc[3], row.iloc[4], row.iloc[5]])
 
         # --- D. 양식에 주입 ---
         target_buf = await f_target.arrayBuffer()
         target_bytes = io.BytesIO(Uint8Array.new(target_buf).to_py())
-        
         output_df = pd.DataFrame(combined_rows)
         with pd.ExcelWriter(target_bytes, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
             output_df.to_excel(writer, sheet_name='RCV Check', startrow=1, index=False, header=False)
 
-        # 다운로드 준비
+        # 화면 업데이트
+        if new_skus:
+            sku_area.style.display = "block"
+            sku_list_span.innerText = ", ".join(map(str, new_skus))
+        
         target_bytes.seek(0)
         blob = Blob.new([Uint8Array.new(target_bytes.read())], {"type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"})
         url = URL.createObjectURL(blob)
-        
-        status.innerText = f"통합 성공! 총 {len(combined_rows)}개 데이터를 주입했습니다."
+        status.innerText = f"성공! 총 {len(combined_rows)}개 데이터를 주입했습니다."
         dl_area.style.display = "block"
         
         def dl(e):
@@ -129,10 +109,8 @@ async def process(event):
         document.getElementById("dl-btn").onclick = create_proxy(dl)
 
     except Exception as e:
-        status.innerText = f"오류 발생: {str(e)}\n파일 형식을 다시 확인해주세요."
+        status.innerText = f"오류 발생: {str(e)}"
     
 from pyodide.ffi import create_proxy
 document.getElementById("run-btn").addEventListener("click", create_proxy(process))
 </script>
-</body>
-</html>
