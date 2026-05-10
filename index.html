@@ -19,6 +19,7 @@
         button:disabled { background-color: #dadce0; cursor: not-allowed; }
         #status { margin-top: 20px; padding: 15px; border-radius: 8px; font-size: 14px; font-weight: bold; background-color: #f8f9fa; border: 1px solid #eee; }
         .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; text-align: left; border-radius: 4px; font-size: 13px; }
+        .sku-count { margin-top: 10px; font-weight: bold; color: #d32f2f; border-top: 1px solid #fbc02d; padding-top: 5px; }
         #download_area { display: none; margin-top: 30px; padding: 20px; border: 2px solid #4caf50; border-radius: 12px; background-color: #f1f8e9; }
         #download_link { font-size: 18px; color: #2e7d32; font-weight: bold; text-decoration: none; display: inline-block; padding: 10px 20px; background: #ffffff; border: 1px solid #4caf50; border-radius: 6px; cursor: pointer; }
     </style>
@@ -67,9 +68,10 @@ async def process_files(event):
     sku_div = document.getElementById("sku_result")
     dl_area = document.getElementById("download_area")
     
-    status.innerHTML = "⏳ 공정 시작... (잠시만 기다려주세요)"
+    status.innerHTML = "⏳ 공정 시작... (New SKU 분석 중)"
     status.style.backgroundColor = "#fff3cd"
-    await asyncio.sleep(0.1) # 화면 갱신을 위한 짧은 대기
+    sku_div.style.display = "none"
+    await asyncio.sleep(0.1)
 
     try:
         async def get_df(elem_id):
@@ -88,43 +90,55 @@ async def process_files(event):
         df_ts = await get_df("ts_file")
         df_po = await get_df("po_file")
 
+        # [1] New SKU 감지 (TruckShipment V열/22번째 기준)
+        if df_ts is not None:
+            # 모든 열 이름을 대문자로 통일하여 찾기
+            df_ts.columns = [str(c).strip().upper() for c in df_ts.columns]
+            temp_col = next((c for c in df_ts.columns if "온도" in c), None)
+            id_col = next((c for c in df_ts.columns if "SKUID" in c), None)
+            
+            if temp_col and id_col:
+                mask = df_ts[temp_col].astype(str).str.contains('NEW', case=False, na=False)
+                # 숫자 ID가 소수점으로 나오는 현상 방지
+                found_ids = df_ts.loc[mask, id_col].dropna().apply(lambda x: str(int(float(x))) if str(x).replace('.','').isdigit() else str(x)).unique().tolist()
+                
+                if found_ids:
+                    sku_div.style.display = "block"
+                    sku_div.innerHTML = f"📢 <b>New SKU 발견 리스트:</b><br>{', '.join(found_ids)}<div class='sku-count'>👉 총 {len(found_ids)}개의 New SKU가 발견되었습니다.</div>"
+
+        # [2] 엑셀 주입 작업
         wb = openpyxl.load_workbook(io.BytesIO(target_buf.to_py()))
         
-        # [1] TRUCKSHIPMENT 주입 (U, V, W열 21, 22, 23번 수식 보존)
+        # TRUCKSHIPMENT (U, V, W 수식 보존)
         ts_name = next((s for s in wb.sheetnames if s.upper() == "TRUCKSHIPMENT"), None)
         if ts_name and df_ts is not None:
             ws_ts = wb[ts_name]
-            # delete_rows 대신 필요한 범위만 빠르게 값 삭제
-            # A~T(1~20) 삭제
             for r in ws_ts.iter_rows(min_row=2, max_row=ws_ts.max_row, min_col=1, max_col=20):
                 for cell in r: cell.value = None
-            # X(24)열 이후 삭제
             if ws_ts.max_column >= 24:
                 for r in ws_ts.iter_rows(min_row=2, max_row=ws_ts.max_row, min_col=24, max_col=ws_ts.max_column):
                     for cell in r: cell.value = None
             
-            # 데이터 주입 (U, V, W 제외)
-            ts_list = df_ts.values.tolist()
-            for r_idx, row_vals in enumerate(ts_list, 2):
+            ts_data = df_ts.values.tolist()
+            for r_idx, row_vals in enumerate(ts_data, 2):
                 for c_idx, val in enumerate(row_vals, 1):
-                    if c_idx not in [21, 22, 23]:
+                    if c_idx not in [21, 22, 23]: # U, V, W 보호
                         ws_ts.cell(row=r_idx, column=c_idx, value=val if pd.notna(val) else "")
 
-        # [2] PO_SKU_LIST 주입 (BC열 55번까지 삭제 후 주입)
+        # PO_SKU_LIST (BC열까지 삭제)
         po_name = next((s for s in wb.sheetnames if "PO" in s.upper()), None)
         if po_name and df_po is not None:
             ws_po = wb[po_name]
-            # A(1) ~ BC(55) 삭제
             for r in ws_po.iter_rows(min_row=2, max_row=ws_po.max_row, min_col=1, max_col=55):
                 for cell in r: cell.value = None
-            # 데이터 주입
-            po_list = df_po.values.tolist()
-            for r_idx, row_vals in enumerate(po_list, 2):
+            
+            po_data = df_po.values.tolist()
+            for r_idx, row_vals in enumerate(po_data, 2):
                 for c_idx, val in enumerate(row_vals, 1):
-                    if c_idx <= 55:
+                    if c_idx <= 55: # BC열까지 주입
                         ws_po.cell(row=r_idx, column=c_idx, value=val if pd.notna(val) else "")
 
-        # [3] 검품 내역 주입 (단순 전체 갱신)
+        # 검품 내역 주입
         chk_name = next((s for s in wb.sheetnames if "검품" in s), None)
         if chk_name and df_check is not None:
             ws_chk = wb[chk_name]
@@ -133,16 +147,16 @@ async def process_files(event):
                 for c_idx, val in enumerate(row_vals, 1):
                     ws_chk.cell(row=r_idx, column=c_idx, value=val if pd.notna(val) else "")
 
-        # 4. 결과 파일 저장
-        status.innerHTML = "⏳ 최종 파일 저장 중..."
+        # [3] 최종 저장
+        status.innerHTML = "⏳ 결과 파일 생성 중..."
         await asyncio.sleep(0.05)
         out_buf = io.BytesIO()
         wb.save(out_buf)
         processed_blob = Blob.new([Uint8Array.new(out_buf.getvalue())], { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
         
-        download_link = document.getElementById("download_link")
-        download_link.href = URL.createObjectURL(processed_blob)
-        download_link.download = "리시브_마감_결과_완료.xlsx"
+        link = document.getElementById("download_link")
+        link.href = URL.createObjectURL(processed_blob)
+        link.download = "마감완료_최종.xlsx"
         
         dl_area.style.display = "block"
         status.innerHTML = "✅ 모든 작업이 완료되었습니다!"
@@ -151,7 +165,6 @@ async def process_files(event):
     except Exception as e:
         status.innerHTML = f"❌ 오류 발생: {str(e)}"
         status.style.backgroundColor = "#ffcdd2"
-        print(f"Error: {e}")
 
 run_btn.onclick = process_files
 </script>
