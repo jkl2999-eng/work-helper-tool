@@ -6,7 +6,6 @@
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
     <style>
-        /* 중앙 정렬 유지 */
         html, body { height: 100%; margin: 0; display: flex; justify-content: center; align-items: center; background-color: #f0f2f5; }
         .container { width: 90%; max-width: 500px; background: #ffffff; padding: 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); text-align: center; }
         h2 { color: #1a73e8; margin-bottom: 20px; }
@@ -16,9 +15,8 @@
         button { width: 100%; background-color: #1a73e8; color: white; border: none; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
         button:disabled { background-color: #dadce0; cursor: not-allowed; }
         
-        #status { margin-top: 15px; padding: 12px; border-radius: 6px; display: none; font-size: 14px; font-weight: bold; }
-        .info { background-color: #e8f0fe; color: #1967d2; border: 1px solid #1a73e8; }
-        .error { background-color: #fce8e6; color: #c5221f; border: 1px solid #c5221f; }
+        #status { margin-top: 15px; padding: 12px; border-radius: 6px; display: none; font-size: 14px; font-weight: bold; border: 1px solid #1a73e8; background-color: #e8f0fe; color: #1967d2; }
+        .error { background-color: #fce8e6 !important; color: #c5221f !important; border: 1px solid #c5221f !important; }
         
         #new-sku-area { display:none; background-color: #fff4e5; border-left: 5px solid #ffa000; padding: 12px; margin-top: 15px; text-align: left; font-size: 13px; }
         #download-area { margin-top: 20px; display: none; padding: 15px; border: 2px solid #34a853; border-radius: 8px; }
@@ -33,21 +31,26 @@
     <div class="file-group"><label>📋 3. PO_SKU_LIST</label><input type="file" id="src-po"></div>
     <div class="file-group"><label>📑 4. 검품내역</label><input type="file" id="src-check"></div>
 
-    <button id="run-btn" onclick="startLoading()">분석 및 통합 시작</button>
+    <button id="run-btn" onclick="preProcess()">분석 및 통합 시작</button>
 
-    <div id="status"></div>
+    <div id="status">⏳ 데이터 분석 중... 창을 닫지 마세요.</div>
     <div id="new-sku-area"><strong>📢 [New SKU 감지]</strong><br><span id="new-sku-list"></span></div>
     <div id="download-area"><p style="color: #2e7d32; font-weight: bold;">✅ 통합 완료!</p><button id="dl-btn" style="background-color: #34a853;">파일 다운로드</button></div>
 </div>
 
 <script>
-    // JS가 즉시 실행되어 로딩바 표시
-    function startLoading() {
-        const s = document.getElementById("status");
-        s.style.display = "block";
-        s.className = "info";
-        s.innerText = "⏳ 데이터 분석 중... 잠시만 기다려주세요.";
-        document.getElementById("run-btn").disabled = true;
+    // 1. 자바스크립트가 로딩 메시지를 즉시 띄움
+    function preProcess() {
+        const status = document.getElementById("status");
+        const btn = document.getElementById("run-btn");
+        status.style.display = "block";
+        btn.disabled = true;
+        
+        // 2. 0.1초 후에 파이썬 함수(pythonProcess)를 강제 호출함
+        // 이렇게 해야 브라우저가 로딩 창을 그릴 시간을 벌 수 있습니다.
+        setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('start-python-logic'));
+        }, 100);
     }
 </script>
 
@@ -59,16 +62,15 @@
 import pandas as pd
 import io
 from pyscript import window
-from js import document, Uint8Array, Blob, URL
+from js import document, Uint8Array, Blob, URL, CustomEvent
 
-async def process(event):
+async def python_logic(event):
     status = document.getElementById("status")
     dl_area = document.getElementById("download-area")
     sku_area = document.getElementById("new-sku-area")
     btn = document.getElementById("run-btn")
 
     try:
-        # 오류 해결 포인트: .item(0) 메서드를 사용하여 JS 객체에서 파일 추출
         f_target = document.getElementById("target-file").files.item(0)
         f_ts = document.getElementById("src-ts").files.item(0)
         f_po = document.getElementById("src-po").files.item(0)
@@ -83,19 +85,19 @@ async def process(event):
         combined_rows = []
         new_skus = []
 
-        # 1. TruckShipment
+        # 데이터 분석 (TruckShipment)
         ts_buf = await f_ts.arrayBuffer()
         ts_df = pd.read_excel(io.BytesIO(Uint8Array.new(ts_buf).to_py())).astype(str)
         t_cols = [c for c in ts_df.columns if "온도" in str(c)]
         if t_cols:
             t_col = t_cols[0]
-            new_mask = ts_df[t_col].str.contains("NEW", case=False, na=False)
-            new_skus = ts_df[new_mask].iloc[:, 13].replace('nan', '').unique().tolist()
+            mask_new = ts_df[t_col].str.contains("NEW", case=False, na=False)
+            new_skus = ts_df[mask_new].iloc[:, 13].replace('nan', '').unique().tolist()
             ts_f = ts_df[ts_df[t_col].str.contains("냉동", na=False)]
             for _, row in ts_f.iterrows():
                 combined_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
 
-        # 2. PO_SKU_LIST
+        # 데이터 분석 (PO_SKU_LIST)
         po_buf = await f_po.arrayBuffer()
         po_df = pd.read_excel(io.BytesIO(Uint8Array.new(po_buf).to_py())).astype(str)
         p_t_cols = [c for c in po_df.columns if "온도" in str(c)]
@@ -105,30 +107,30 @@ async def process(event):
             for _, row in po_f.iterrows():
                 combined_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
 
-        # 3. 검품내역
+        # 데이터 분석 (검품내역)
         check_buf = await f_check.arrayBuffer()
         check_df = pd.read_excel(io.BytesIO(Uint8Array.new(check_buf).to_py())).astype(str)
         for _, row in check_df.iterrows():
             if len(row) >= 6: combined_rows.append([row.iloc[0], row.iloc[1], row.iloc[2], row.iloc[3], row.iloc[4], row.iloc[5]])
 
-        # 4. 양식 주입
+        # 양식 주입
         target_buf = await f_target.arrayBuffer()
         target_bytes = io.BytesIO(Uint8Array.new(target_buf).to_py())
         with pd.ExcelWriter(target_bytes, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
             pd.DataFrame(combined_rows).to_excel(writer, sheet_name='RCV Check', startrow=1, index=False, header=False)
 
-        # 결과 출력
+        # 결과물 처리
         if new_skus and any(new_skus):
             sku_area.style.display = "block"
             document.getElementById("new-sku-list").innerText = ", ".join([str(s) for s in new_skus if s])
 
         target_bytes.seek(0)
         url = URL.createObjectURL(Blob.new([Uint8Array.new(target_bytes.read())], {"type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}))
-        status.innerText = "✅ 모든 데이터가 통합되었습니다."
+        status.innerText = "✅ 통합 완료! 다운로드 버튼을 누르세요."
         dl_area.style.display = "block"
         
         def dl_handler(e):
-            a = document.createElement("a"); a.href = url; a.download = "RCV_최종결과.xlsx"; a.click()
+            a = document.createElement("a"); a.href = url; a.download = "RCV_결과.xlsx"; a.click()
         from pyodide.ffi import create_proxy
         document.getElementById("dl-btn").onclick = create_proxy(dl_handler)
 
@@ -138,8 +140,9 @@ async def process(event):
     finally:
         btn.disabled = False
 
+# 자바스크립트의 신호를 기다리는 이벤트 리스너 등록
 from pyodide.ffi import create_proxy
-document.getElementById("run-btn").addEventListener("click", create_proxy(process))
+window.addEventListener('start-python-logic', create_proxy(python_logic))
 </script>
 </body>
 </html>
