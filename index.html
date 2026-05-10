@@ -73,77 +73,85 @@ async def python_logic(event):
         f_po = document.getElementById("src-po").files.item(0)
         f_check = document.getElementById("src-check").files.item(0)
 
-        if not f_target or not f_ts or not f_po or not f_check:
-            window.alert("4개의 파일을 모두 선택해야 합니다!")
-            status.style.display = "none"
-            btn.disabled = False
-            return
+        if not all([f_target, f_ts, f_po, f_check]):
+            window.alert("4개의 파일을 모두 선택해 주세요!"); status.style.display = "none"; btn.disabled = False; return
 
         rcv_rows = []
-        check_rows = []
+        ts_full_rows = []
+        check_full_rows = []
         new_skus = []
 
-        # 1. TruckShipment (V열 21번 인덱스)
+        # 1. TruckShipment 분석
         ts_buf = await f_ts.arrayBuffer()
         ts_df = pd.read_excel(io.BytesIO(Uint8Array.new(ts_buf).to_py())).astype(str)
+        # 모든 데이터 공백 제거 (인식률 향상)
+        ts_df = ts_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+        
         t_idx = 21 if len(ts_df.columns) > 21 else len(ts_df.columns) - 1
-        
-        mask_new = ts_df.iloc[:, t_idx].str.contains("NEW", case=False, na=False)
-        new_skus = ts_df[mask_new].iloc[:, 13].replace('nan', '').unique().tolist()
-        
-        ts_f = ts_df[ts_df.iloc[:, t_idx].str.contains("냉동", na=False)]
-        for _, row in ts_f.iterrows():
-            rcv_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
+        ts_full_rows = ts_df.values.tolist()
 
-        # 2. PO_SKU_LIST
+        # NEW 및 냉동 필터링 (글자 포함 여부로 체크)
+        for _, row in ts_df.iterrows():
+            temp_val = str(row.iloc[t_idx])
+            if "NEW" in temp_val.upper():
+                new_skus.append(row.iloc[13])
+            if "냉동" in temp_val:
+                rcv_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
+
+        # 2. PO_SKU_LIST 분석
         po_buf = await f_po.arrayBuffer()
         po_df = pd.read_excel(io.BytesIO(Uint8Array.new(po_buf).to_py())).astype(str)
+        po_df = po_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+        
         p_t_cols = [i for i, c in enumerate(po_df.columns) if "온도" in str(c)]
         p_idx = p_t_cols[0] if p_t_cols else 19
-        po_f = po_df[(po_df.iloc[:, p_idx].str.contains("냉동", na=False)) & (po_df.iloc[:, 13].str.contains("밀크런", na=False))]
-        for _, row in po_f.iterrows():
-            rcv_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
+        
+        for _, row in po_df.iterrows():
+            p_temp = str(row.iloc[p_idx])
+            p_milk = str(row.iloc[13])
+            if "냉동" in p_temp and "밀크런" in p_milk:
+                rcv_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
 
-        # 3. 검품내역 (검품 시트용 리스트에 따로 담기)
+        # 3. 검품내역 분석
         c_buf = await f_check.arrayBuffer()
         c_df = pd.read_excel(io.BytesIO(Uint8Array.new(c_buf).to_py())).astype(str)
-        for _, row in c_df.iterrows():
-            check_rows.append(row.tolist())
+        check_full_rows = c_df.values.tolist()
 
         # 4. 양식 주입
-        target_buf = await f_target.arrayBuffer()
-        target_io = io.BytesIO(Uint8Array.new(target_buf).to_py())
         from openpyxl import load_workbook
+        target_io = io.BytesIO(Uint8Array.new(await f_target.arrayBuffer()).to_py())
         wb = load_workbook(target_io)
-        
-        # RCV Check 시트 주입
-        if 'RCV Check' in wb.sheetnames:
-            ws_rcv = wb['RCV Check']
-            for row in ws_rcv.iter_rows(min_row=2, max_row=500, min_col=1, max_col=6):
-                for cell in row: cell.value = None
-            for r_idx, r_data in enumerate(rcv_rows, start=2):
-                for c_idx, val in enumerate(r_data, start=1):
-                    ws_rcv.cell(row=r_idx, column=c_idx, value=val)
 
-        # 검품내역 시트 주입 (따로 분류해서 갱신)
-        if '검품내역' in wb.sheetnames:
-            ws_chk = wb['검품내역']
-            for row in ws_chk.iter_rows(min_row=2, max_row=1000):
-                for cell in row: cell.value = None
-            for r_idx, r_data in enumerate(check_rows, start=2):
-                for c_idx, val in enumerate(r_data, start=1):
-                    ws_chk.cell(row=r_idx, column=c_idx, value=val)
+        # [함수] 시트 데이터 초기화 및 주입
+        def update_sheet(sheet_name, data, max_col, start_row=2):
+            if sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                # 기존 데이터 삭제
+                for r in ws.iter_rows(min_row=start_row, max_row=ws.max_row + 100, min_col=1, max_col=max_col):
+                    for c in r: c.value = None
+                # 새 데이터 주입
+                for i, r_data in enumerate(data, start=start_row):
+                    for j, val in enumerate(r_data, start=1):
+                        ws.cell(row=i, column=j, value=val)
+
+        # 각 시트 주입 실행
+        update_sheet('RCV Check', rcv_rows, 6)
         
+        ts_sheet = 'TRUCKSHIPMENT' if 'TRUCKSHIPMENT' in wb.sheetnames else 'TruckShipment'
+        update_sheet(ts_sheet, ts_full_rows, len(ts_df.columns))
+        
+        update_sheet('검품내역', check_full_rows, 10)
+
         output = io.BytesIO()
-        wb.save(output)
-        output.seek(0)
+        wb.save(output); output.seek(0)
 
-        if new_skus and any(new_skus):
+        # UI 업데이트
+        if new_skus:
             sku_area.style.display = "block"
-            document.getElementById("new-sku-list").innerText = ", ".join([str(s) for s in new_skus if s])
+            document.getElementById("new-sku-list").innerText = ", ".join(set([str(s) for s in new_skus if s and s != 'nan']))
 
         url = URL.createObjectURL(Blob.new([Uint8Array.new(output.read())], {"type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}))
-        status.innerText = f"✅ 통합 성공! (RCV: {len(rcv_rows)}건, 검품: {len(check_rows)}건)"
+        status.innerText = f"✅ 통합 완료! (RCV용 데이터: {len(rcv_rows)}건)"
         dl_area.style.display = "block"
         
         def dl_handler(e):
@@ -152,8 +160,7 @@ async def python_logic(event):
         document.getElementById("dl-btn").onclick = create_proxy(dl_handler)
 
     except Exception as e:
-        status.className = "error"
-        status.innerText = f"❌ 오류: {str(e)}"
+        status.className = "error"; status.innerText = f"❌ 오류: {str(e)}"
     finally:
         btn.disabled = False
 
