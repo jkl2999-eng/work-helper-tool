@@ -13,7 +13,7 @@
         .file-input-group label { display: block; font-weight: bold; margin-bottom: 8px; color: #555; font-size: 13px; }
         input[type="file"] { width: 100%; font-size: 12px; }
         button { width: 100%; padding: 15px; background-color: #1e88e5; color: white; border: none; border-radius: 8px; font-size: 17px; font-weight: bold; cursor: pointer; }
-        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        button:disabled { background-color: #dadce0; cursor: not-allowed; }
         #status { margin-top: 20px; padding: 12px; border-radius: 8px; display: none; font-size: 14px; font-weight: bold; border: 1px solid #1e88e5; background: #e3f2fd; color: #1565c0; }
         .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; text-align: left; border-radius: 4px; font-size: 13px; }
         #download_area { display: none; margin-top: 20px; padding: 20px; border: 2px solid #4caf50; border-radius: 8px; background: #f1f8e9; }
@@ -36,7 +36,7 @@
     
     <div id="download_area">
         <p style="color: #2e7d32; font-weight: bold;">🎉 모든 작업이 완료되었습니다!</p>
-        <a id="download_link" style="display: block; padding: 10px; background: #4caf50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">📥 결과 파일 다운로드</a>
+        <a id="download_link" style="display: block; padding: 10px; background: #4caf50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; text-align: center;">📥 결과 파일 다운로드</a>
     </div>
 </div>
 
@@ -44,7 +44,7 @@
     function startLoading() {
         const s = document.getElementById("status");
         s.style.display = "block";
-        s.innerText = "⏳ 데이터 분석 중... (최대 10초 소요)";
+        s.innerText = "⏳ 데이터 분석 중... (잠시만 기다려주세요)";
         document.getElementById("run_btn").disabled = true;
         setTimeout(() => { window.dispatchEvent(new CustomEvent('start-process')); }, 100);
     }
@@ -59,7 +59,8 @@ import pandas as pd
 import openpyxl
 import io
 import asyncio
-from js import Uint8Array, URL, document, Blob
+from pyscript import window # window 객체를 명확히 임포트
+from js import document, Uint8Array, Blob, URL
 
 async def run_process(event):
     status = document.getElementById("status")
@@ -67,7 +68,6 @@ async def run_process(event):
     dl_area = document.getElementById("download_area")
     
     try:
-        # 1. 파일 객체 확보
         f_target = document.getElementById("target_file").files.item(0)
         f_ts = document.getElementById("ts_file").files.item(0)
         f_po = document.getElementById("po_file").files.item(0)
@@ -79,7 +79,7 @@ async def run_process(event):
 
         async def load_df(f):
             buf = await f.arrayBuffer()
-            df = pd.read_excel(io.BytesIO(buf.to_py())).astype(str) # 전체를 문자로 읽어 인식 오류 방지
+            df = pd.read_excel(io.BytesIO(buf.to_py())).astype(str)
             df.columns = [str(c).strip().upper().replace(" ", "") for c in df.columns]
             return df
 
@@ -90,47 +90,44 @@ async def run_process(event):
         rcv_data = []
         new_skus = []
 
-        # 2. 데이터 분석 (키워드 매칭 방식)
-        # (A) TruckShipment 분석
+        # 1. TruckShipment 분석 및 New SKU 감지 로직
         ts_temp_col = next((c for c in df_ts.columns if "온도" in c), None)
         ts_id_col = next((c for c in df_ts.columns if "SKUID" in c or "상품코드" in c), None)
         
         if ts_temp_col:
-            # New SKU 추출 (V열에 'NEW' 포함)
+            # NEW 포함 여부 확인 (대소문자 무시)
             mask_new = df_ts[ts_temp_col].str.contains('NEW', case=False, na=False)
             new_skus = df_ts.loc[mask_new, ts_id_col].unique().tolist() if ts_id_col else []
             
-            # 냉동 필터링
+            # 냉동 데이터 추출
             ts_f = df_ts[df_ts[ts_temp_col].str.contains('냉동', na=False)]
             for _, r in ts_f.iterrows():
-                # 업체ID(1), 업체명(2), 발주번호(11), SKUID(13), SKU명(14), 입고수량(20)
                 rcv_data.append([r.iloc[1], r.iloc[2], r.iloc[11], r.iloc[13], r.iloc[14], r.iloc[20]])
 
-        # (B) PO_SKU_LIST 분석
+        # 2. PO_SKU_LIST 분석
         po_temp_col = next((c for c in df_po.columns if "온도" in c), None)
-        po_milk_col = next((c for c in df_po.columns if "운송" in c or "밀크런" in c or "유형" in c), None)
+        po_milk_col = next((c for c in df_po.columns if "운송" in c or "밀크런" in c), None)
         
         if po_temp_col and po_milk_col:
             po_f = df_po[df_po[po_temp_col].str.contains('냉동', na=False) & df_po[po_milk_col].str.contains('밀크런', na=False)]
             for _, r in po_f.iterrows():
-                # 업체ID(7), 업체명(8), 발주번호(0), SKUID(2), SKU명(6), 업체확정수량(25)
                 rcv_data.append([r.iloc[7], r.iloc[8], r.iloc[0], r.iloc[2], r.iloc[6], r.iloc[25]])
 
         # 3. 양식 시트 주입
         target_buf = await f_target.arrayBuffer()
         wb = openpyxl.load_workbook(io.BytesIO(target_buf.to_py()))
         
-        # [공통] 시트 청소 및 주입 함수
-        def fill_sheet(sheet_name, data_list, max_col=10):
+        def fill_sheet(sheet_name, data_list, max_col):
             if sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
+                # 기존 데이터 삭제 (헤더 제외)
                 for row in ws.iter_rows(min_row=2, max_row=ws.max_row+50, min_col=1, max_col=max_col):
                     for cell in row: cell.value = None
+                # 데이터 주입
                 for i, row_vals in enumerate(data_list, 2):
                     for j, val in enumerate(row_vals, 1):
                         ws.cell(row=i, column=j, value=val if val != 'nan' else "")
 
-        # 시트별 주입 실행
         fill_sheet('RCV Check', rcv_data, 6)
         
         ts_name = 'TRUCKSHIPMENT' if 'TRUCKSHIPMENT' in wb.sheetnames else 'TruckShipment'
@@ -138,10 +135,10 @@ async def run_process(event):
         
         fill_sheet('검품내역', df_check.values.tolist(), len(df_check.columns))
 
-        # 4. 결과 출력
+        # 4. 결과 표시
         if new_skus:
             sku_div.style.display = "block"
-            sku_div.innerHTML = f"📢 <b>New SKU 발견 ({len(new_skus)}건):</b> {', '.join([str(s) for s in new_skus if s != 'nan'])}"
+            sku_div.innerHTML = f"📢 <b>New SKU 발견:</b> {', '.join([str(s) for s in new_skus if s != 'nan'])}"
 
         out = io.BytesIO()
         wb.save(out)
@@ -149,16 +146,16 @@ async def run_process(event):
         
         link = document.getElementById("download_link")
         link.href = URL.createObjectURL(blob)
-        link.download = "RCV_마감결과_최종.xlsx"
+        link.download = "RCV_결과_최종.xlsx"
         dl_area.style.display = "block"
-        status.innerText = f"✅ 주입 완료! (RCV용 데이터: {len(rcv_data)}건)"
+        status.innerText = f"✅ 처리 완료! (RCV용 데이터: {len(rcv_data)}건)"
 
     except Exception as e:
         status.innerText = f"❌ 오류 발생: {str(e)}"
         document.getElementById("run_btn").disabled = False
 
 from pyodide.ffi import create_proxy
-window.addEventListener('start-process', create_proxy(run_process))
+document.addEventListener('start-process', create_proxy(run_process)) # window 대신 document 사용 권장
 </script>
 </body>
 </html>
