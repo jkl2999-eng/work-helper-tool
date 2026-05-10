@@ -12,12 +12,11 @@
         h2 { color: #1e88e5; text-align: center; }
         .file-box { border: 2px dashed #ddd; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
         .file-input { margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
-        button { padding: 15px; background-color: #1e88e5; color: white; border: none; cursor: pointer; border-radius: 8px; width: 100%; font-size: 16px; font-weight: bold; }
-        button:hover { background-color: #1565c0; }
-        #status { margin-top: 20px; padding: 15px; border-radius: 8px; font-size: 14px; min-height: 50px; background-color: #f8f9fa; border: 1px solid #eee; }
-        .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; }
-        #download_area { display: none; margin-top: 20px; text-align: center; }
-        #download_link { font-size: 18px; color: #1e88e5; font-weight: bold; text-decoration: none; border: 2px solid #1e88e5; padding: 10px 20px; border-radius: 8px; }
+        button { padding: 15px; background-color: #1e88e5; color: white; border: none; cursor: pointer; border-radius: 8px; width: 100%; font-size: 18px; font-weight: bold; }
+        #status { margin-top: 20px; padding: 15px; border-radius: 8px; display: block; text-align: center; background-color: #f8f9fa; border: 1px solid #eee; }
+        .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; border-radius: 4px; }
+        .sku-count { margin-top: 10px; font-weight: bold; color: #d32f2f; border-top: 1px solid #fbc02d; padding-top: 5px; }
+        #download_area { display: none; margin-top: 30px; text-align: center; padding: 20px; border: 2px solid #4caf50; border-radius: 8px; }
     </style>
 </head>
 <body>
@@ -33,12 +32,12 @@
         <div class="file-input"><span>📋 4. PO_SKU_LIST (.xlsx)</span> <input type="file" id="po_file"></div>
     </div>
     
-    <button id="run_btn" disabled>🚀 공정 시작</button>
+    <button id="run_btn">🚀 공정 시작</button>
     
     <div id="sku_result" class="new-sku-box"></div>
     <div id="download_area">
-        <p style="margin-bottom: 15px; font-weight: bold;">🎉 작업이 완료되었습니다!</p>
-        <a id="download_link">📥 [ 마감완료 파일 다운로드 ]</a>
+        <p>🎉 작업이 완료되었습니다!</p>
+        <a id="download_link" style="font-size: 20px; color: #2e7d32; font-weight: bold; text-decoration: none;">📥 [ 마감완료 파일 다운로드 ]</a>
     </div>
 </div>
 
@@ -50,110 +49,100 @@
 import pandas as pd
 import openpyxl
 import asyncio
-import io
-from pyscript import window
 from js import Uint8Array, URL, document, Blob
+import io
 
-status_el = document.getElementById("status")
-run_btn = document.getElementById("run_btn")
-status_el.innerHTML = "✅ 준비 완료! 파일을 선택해 주세요."
-run_btn.disabled = False
+# 초기화 완료 알림
+document.getElementById("status").innerHTML = "✅ 준비 완료! 파일을 선택하고 공정 시작을 눌러주세요."
 
 async def process_files(event):
     status = document.getElementById("status")
     sku_div = document.getElementById("sku_result")
-    dl_area = document.getElementById("download_area")
-    
-    status.innerHTML = "⏳ 공정 시작..."
-    await asyncio.sleep(0.1)
+    status.style.display = "block"
+    sku_div.style.display = "none"
+    status.innerHTML = "⏳ 공정을 시작합니다..."
+    status.style.backgroundColor = "#fff3cd"
 
     try:
-        # 파일 로드 함수
+        # 1. 파일 읽기
         async def get_df(elem_id):
-            el = document.getElementById(elem_id)
-            if not el.files or el.files.length == 0: return None
-            buf = await el.files.item(0).arrayBuffer()
-            return pd.read_excel(io.BytesIO(buf.to_py()))
+            file_el = document.getElementById(elem_id)
+            if not file_el.files or file_el.files.length == 0: return None
+            array_buf = await file_el.files.item(0).arrayBuffer()
+            return pd.read_excel(io.BytesIO(array_buf.to_py()))
 
-        target_el = document.getElementById("target_file")
-        if not target_el.files.length:
-            window.alert("마감 양식 파일을 선택해주세요!")
-            return
+        df_target_raw = await document.getElementById("target_file").files.item(0).arrayBuffer()
+        df_check = await get_df("check_file")
+        df_ts = await get_df("ts_file")
+        df_po = await get_df("po_file")
 
-        target_buf = await target_el.files.item(0).arrayBuffer()
-        ts_f = await get_df("ts_file")
-        po_f = await get_df("po_file")
-        chk_f = await get_df("check_file")
+        # 2. New SKU 추출 (원본 데이터 변조 방지)
+        if df_ts is not None:
+            # 컬럼명 정리
+            ts_cols = [str(c).strip().upper().replace(" ", "") for c in df_ts.columns]
+            temp_idx = next((i for i, c in enumerate(ts_cols) if "온도" in c), None)
+            id_idx = next((i for i, c in enumerate(ts_cols) if "SKUID" in c), None)
+            
+            if temp_idx is not None and id_idx is not None:
+                mask = df_ts.iloc[:, temp_idx].astype(str).str.contains('NEW', case=False, na=False)
+                new_ids_raw = df_ts.iloc[:, id_idx][mask].dropna().unique().tolist()
+                
+                # SKUID 포맷팅 (지수 표현 방지)
+                found_ids = []
+                for x in new_ids_raw:
+                    try: found_ids.append(str(int(float(x))))
+                    except: found_ids.append(str(x))
+                
+                if found_ids:
+                    sku_div.style.display = "block"
+                    sku_div.innerHTML = f"📢 <b>New SKU 발견 리스트:</b><br>{', '.join(found_ids)}<div class='sku-count'>👉 총 {len(found_ids)}개의 New SKU가 발견되었습니다.</div>"
 
-        wb = openpyxl.load_workbook(io.BytesIO(target_buf.to_py()))
-
-        # [핵심] 수식 보호 데이터 주입 함수
-        def fill_safe(ws, df, start_row=2, max_col_limit=None):
-            if df is None: return
-            # 1. 기존 데이터 삭제 (수식 제외)
+        # 3. 데이터 주입 (수식 보호 로직 적용)
+        status.innerHTML = "⏳ 양식 시트에 데이터를 주입하는 중..."
+        wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()))
+        
+        def fill_safe(s_name, df_source, max_col_limit=None):
+            if s_name not in wb.sheetnames or df_source is None: return
+            ws = wb[s_name]
+            
+            # 수식 셀 보호하며 기존 값 지우기
             limit = max_col_limit if max_col_limit else ws.max_column
-            for r in range(start_row, ws.max_row + 1):
-                for c in range(1, limit + 1):
-                    cell = ws.cell(r, c)
-                    # 수식('f')이 아닌 경우에만 값을 비움
-                    if cell.data_type != 'f':
-                        cell.value = None
-
-            # 2. 새 데이터 주입 (수식 제외)
-            data = df.values.tolist()
-            for r_idx, row_vals in enumerate(data, start_row):
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=limit):
+                for cell in row:
+                    if cell.data_type != 'f': cell.value = None
+            
+            # 데이터 주입 (수식 셀 건너뜀)
+            data_list = df_source.values.tolist()
+            for r_idx, row_vals in enumerate(data_list, 2):
                 for c_idx, val in enumerate(row_vals, 1):
                     if max_col_limit and c_idx > max_col_limit: break
                     cell = ws.cell(r_idx, c_idx)
-                    # 수식 셀은 건너뛰고 일반 데이터만 입력
                     if cell.data_type != 'f':
                         cell.value = val if pd.notna(val) else ""
 
-        # 1. TruckShipment 주입
-        status.innerHTML = "⏳ TruckShipment 데이터 주입 중..."
-        ts_sheet = next((s for s in wb.sheetnames if "TRUCK" in s.upper()), None)
-        if ts_sheet and ts_f is not None:
-            fill_safe(wb[ts_sheet], ts_f)
+        # 시트별 주입 (TruckShipment는 전체, PO는 BC열/55번까지)
+        fill_safe('TruckShipment', df_ts)
+        fill_safe('PO_SKU_LIST', df_po, max_col_limit=55)
+        fill_safe('검품 내역', df_check)
 
-        # 2. PO_SKU_LIST 주입 (BC열/55번까지만)
-        status.innerHTML = "⏳ PO_SKU_LIST 데이터 주입 중..."
-        po_sheet = next((s for s in wb.sheetnames if "PO" in s.upper()), None)
-        if po_sheet and po_f is not None:
-            fill_safe(wb[po_sheet], po_f, max_col_limit=55)
-
-        # 3. 검품 내역 주입
-        status.innerHTML = "⏳ 검품 내역 데이터 주입 중..."
-        if "검품 내역" in wb.sheetnames and chk_f is not None:
-            fill_safe(wb["검품 내역"], chk_f)
-
-        # 4. New SKU 감지 및 표시
-        if ts_f is not None:
-            df_ts_clean = ts_f.copy()
-            df_ts_clean.columns = [str(c).strip() for c in df_ts_clean.columns]
-            if "온도" in df_ts_clean.columns and "SKUID" in df_ts_clean.columns:
-                new_skus = df_ts_clean[df_ts_clean["온도"].astype(str).str.contains("NEW", na=False)]["SKUID"].unique()
-                if len(new_skus) > 0:
-                    sku_div.style.display = "block"
-                    sku_div.innerHTML = f"📢 <b>New SKU 발견 ({len(new_skus)}건):</b> {', '.join(map(str, new_skus))}"
-
-        # 5. 결과 저장 및 다운로드
-        status.innerHTML = "⏳ 최종 파일 생성 중..."
+        # 4. 파일 생성 및 저장
+        status.innerHTML = "⏳ 결과 파일을 생성 중입니다..."
         out_buf = io.BytesIO()
         wb.save(out_buf)
+        blob = Blob.new([Uint8Array.new(out_buf.getvalue())], { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
         
-        processed_blob = Blob.new([Uint8Array.new(out_buf.getvalue())], { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
         link = document.getElementById("download_link")
-        link.href = URL.createObjectURL(processed_blob)
+        link.href = URL.createObjectURL(blob)
         link.download = "리시브_마감_완료.xlsx"
-        
-        dl_area.style.display = "block"
+        document.getElementById("download_area").style.display = "block"
         status.innerHTML = "✅ 모든 작업이 완료되었습니다!"
+        status.style.backgroundColor = "#c8e6c9"
 
     except Exception as e:
         status.innerHTML = f"❌ 오류 발생: {str(e)}"
-        print(e)
+        status.style.backgroundColor = "#ffcdd2"
 
-run_btn.onclick = process_files
+document.getElementById("run_btn").onclick = process_files
 </script>
 </body>
 </html>
