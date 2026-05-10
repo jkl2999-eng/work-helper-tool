@@ -6,16 +6,16 @@
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
     <style>
+        /* 중앙 정렬 유지 */
         html, body { height: 100%; margin: 0; display: flex; justify-content: center; align-items: center; background-color: #f0f2f5; }
         .container { width: 90%; max-width: 500px; background: #ffffff; padding: 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); text-align: center; }
         h2 { color: #1a73e8; margin-bottom: 20px; }
-        .file-group { text-align: left; margin-bottom: 15px; padding: 12px; border: 1px solid #e8eaed; border-radius: 8px; background: #fafafa; }
-        .file-group label { display: block; font-weight: bold; margin-bottom: 8px; color: #5f6368; font-size: 13px; }
+        .file-group { text-align: left; margin-bottom: 12px; padding: 12px; border: 1px solid #e8eaed; border-radius: 8px; background: #fafafa; }
+        .file-group label { display: block; font-weight: bold; margin-bottom: 6px; color: #5f6368; font-size: 13px; }
         input[type="file"] { width: 100%; font-size: 12px; }
         button { width: 100%; background-color: #1a73e8; color: white; border: none; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
         button:disabled { background-color: #dadce0; cursor: not-allowed; }
         
-        /* 로딩 및 상태 메시지 스타일 */
         #status { margin-top: 15px; padding: 12px; border-radius: 6px; display: none; font-size: 14px; font-weight: bold; }
         .info { background-color: #e8f0fe; color: #1967d2; border: 1px solid #1a73e8; }
         .error { background-color: #fce8e6; color: #c5221f; border: 1px solid #c5221f; }
@@ -28,7 +28,6 @@
 
 <div class="container">
     <h2>📦 RCV 자동 통합</h2>
-    
     <div class="file-group"><label>📁 1. 통합 양식 파일</label><input type="file" id="target-file"></div>
     <div class="file-group"><label>📄 2. TruckShipment</label><input type="file" id="src-ts"></div>
     <div class="file-group"><label>📋 3. PO_SKU_LIST</label><input type="file" id="src-po"></div>
@@ -37,27 +36,18 @@
     <button id="run-btn" onclick="startLoading()">분석 및 통합 시작</button>
 
     <div id="status"></div>
-
-    <div id="new-sku-area">
-        <strong style="color: #e67e22;">📢 [New SKU 감지]</strong><br>
-        조회 필요 ID: <span id="new-sku-list" style="font-weight: bold;"></span>
-    </div>
-
-    <div id="download-area">
-        <p style="color: #2e7d32; font-weight: bold; margin-bottom: 15px;">✅ 통합 완료!</p>
-        <button id="dl-btn" style="background-color: #34a853;">통합 파일 다운로드</button>
-    </div>
+    <div id="new-sku-area"><strong>📢 [New SKU 감지]</strong><br><span id="new-sku-list"></span></div>
+    <div id="download-area"><p style="color: #2e7d32; font-weight: bold;">✅ 통합 완료!</p><button id="dl-btn" style="background-color: #34a853;">파일 다운로드</button></div>
 </div>
 
 <script>
-    // 버튼 클릭 시 자바스크립트가 즉시 로딩바를 띄움
+    // JS가 즉시 실행되어 로딩바 표시
     function startLoading() {
-        const status = document.getElementById("status");
-        const btn = document.getElementById("run-btn");
-        status.style.display = "block";
-        status.className = "info";
-        status.innerText = "⏳ 데이터 분석 중... 창을 닫지 마세요.";
-        btn.disabled = True;
+        const s = document.getElementById("status");
+        s.style.display = "block";
+        s.className = "info";
+        s.innerText = "⏳ 데이터 분석 중... 잠시만 기다려주세요.";
+        document.getElementById("run-btn").disabled = true;
     }
 </script>
 
@@ -75,17 +65,16 @@ async def process(event):
     status = document.getElementById("status")
     dl_area = document.getElementById("download-area")
     sku_area = document.getElementById("new-sku-area")
-    sku_list_span = document.getElementById("new-sku-list")
     btn = document.getElementById("run-btn")
 
     try:
-        # 파일 입력 확인
-        f_target = document.getElementById("target-file").files[0]
-        f_ts = document.getElementById("src-ts").files[0]
-        f_po = document.getElementById("src-po").files[0]
-        f_check = document.getElementById("src-check").files[0]
+        # 오류 해결 포인트: .item(0) 메서드를 사용하여 JS 객체에서 파일 추출
+        f_target = document.getElementById("target-file").files.item(0)
+        f_ts = document.getElementById("src-ts").files.item(0)
+        f_po = document.getElementById("src-po").files.item(0)
+        f_check = document.getElementById("src-check").files.item(0)
 
-        if not all([f_target, f_ts, f_po, f_check]):
+        if not f_target or not f_ts or not f_po or not f_check:
             window.alert("4개의 파일을 모두 선택해야 합니다!")
             status.style.display = "none"
             btn.disabled = False
@@ -94,7 +83,7 @@ async def process(event):
         combined_rows = []
         new_skus = []
 
-        # 1. TruckShipment 분석
+        # 1. TruckShipment
         ts_buf = await f_ts.arrayBuffer()
         ts_df = pd.read_excel(io.BytesIO(Uint8Array.new(ts_buf).to_py())).astype(str)
         t_cols = [c for c in ts_df.columns if "온도" in str(c)]
@@ -106,7 +95,7 @@ async def process(event):
             for _, row in ts_f.iterrows():
                 combined_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
 
-        # 2. PO_SKU_LIST 분석
+        # 2. PO_SKU_LIST
         po_buf = await f_po.arrayBuffer()
         po_df = pd.read_excel(io.BytesIO(Uint8Array.new(po_buf).to_py())).astype(str)
         p_t_cols = [c for c in po_df.columns if "온도" in str(c)]
@@ -116,29 +105,30 @@ async def process(event):
             for _, row in po_f.iterrows():
                 combined_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
 
-        # 3. 검품내역 분석
+        # 3. 검품내역
         check_buf = await f_check.arrayBuffer()
         check_df = pd.read_excel(io.BytesIO(Uint8Array.new(check_buf).to_py())).astype(str)
         for _, row in check_df.iterrows():
             if len(row) >= 6: combined_rows.append([row.iloc[0], row.iloc[1], row.iloc[2], row.iloc[3], row.iloc[4], row.iloc[5]])
 
-        # 4. 양식에 주입
+        # 4. 양식 주입
         target_buf = await f_target.arrayBuffer()
         target_bytes = io.BytesIO(Uint8Array.new(target_buf).to_py())
-        pd.DataFrame(combined_rows).to_excel(pd.ExcelWriter(target_bytes, engine='openpyxl', mode='a', if_sheet_exists='overlay'), sheet_name='RCV Check', startrow=1, index=False, header=False)
+        with pd.ExcelWriter(target_bytes, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
+            pd.DataFrame(combined_rows).to_excel(writer, sheet_name='RCV Check', startrow=1, index=False, header=False)
 
-        # UI 업데이트
+        # 결과 출력
         if new_skus and any(new_skus):
             sku_area.style.display = "block"
-            sku_list_span.innerText = ", ".join([s for s in new_skus if s])
+            document.getElementById("new-sku-list").innerText = ", ".join([str(s) for s in new_skus if s])
 
         target_bytes.seek(0)
         url = URL.createObjectURL(Blob.new([Uint8Array.new(target_bytes.read())], {"type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}))
-        status.innerText = "✅ 통합 완료! 아래 버튼을 눌러 다운로드하세요."
+        status.innerText = "✅ 모든 데이터가 통합되었습니다."
         dl_area.style.display = "block"
         
         def dl_handler(e):
-            a = document.createElement("a"); a.href = url; a.download = "RCV_결과.xlsx"; a.click()
+            a = document.createElement("a"); a.href = url; a.download = "RCV_최종결과.xlsx"; a.click()
         from pyodide.ffi import create_proxy
         document.getElementById("dl-btn").onclick = create_proxy(dl_handler)
 
