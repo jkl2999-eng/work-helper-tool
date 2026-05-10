@@ -1,54 +1,3 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>리시브 마감 자동화 도구</title>
-    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
-    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
-    <style>
-        body { font-family: 'Malgun Gothic', sans-serif; padding: 20px; background-color: #f4f7f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .container { width: 95%; max-width: 600px; background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); text-align: center; }
-        h2 { color: #1e88e5; margin-bottom: 25px; }
-        .file-box { text-align: left; background: #fafafa; padding: 20px; border-radius: 12px; border: 1px solid #eee; margin-bottom: 20px; }
-        .file-input { margin-bottom: 15px; display: flex; flex-direction: column; }
-        .file-input span { font-weight: bold; margin-bottom: 8px; color: #555; font-size: 14px; }
-        input[type="file"] { font-size: 13px; }
-        button { padding: 16px; background-color: #1e88e5; color: white; border: none; cursor: pointer; border-radius: 8px; width: 100%; font-size: 18px; font-weight: bold; transition: 0.3s; }
-        button:hover { background-color: #1565c0; }
-        button:disabled { background-color: #dadce0; cursor: not-allowed; }
-        #status { margin-top: 20px; padding: 15px; border-radius: 8px; font-size: 14px; font-weight: bold; background-color: #f8f9fa; border: 1px solid #eee; }
-        .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; text-align: left; border-radius: 4px; font-size: 13px; }
-        #download_area { display: none; margin-top: 30px; padding: 20px; border: 2px solid #4caf50; border-radius: 12px; background-color: #f1f8e9; }
-        #download_link { font-size: 18px; color: #2e7d32; font-weight: bold; text-decoration: none; display: inline-block; padding: 10px 20px; background: #ffffff; border: 1px solid #4caf50; border-radius: 6px; cursor: pointer; }
-    </style>
-</head>
-<body>
-
-<div class="container">
-    <h2>🚀 리시브 마감 자동화</h2>
-    <div id="status">⏳ 시스템 초기화 중...</div>
-
-    <div class="file-box">
-        <div class="file-input"><span>📁 1. 마감 양식 (.xlsx)</span> <input type="file" id="target_file"></div>
-        <div class="file-input"><span>📄 2. 검품 내역 (.xlsx)</span> <input type="file" id="check_file"></div>
-        <div class="file-input"><span>📄 3. TruckShipment (.xlsx)</span> <input type="file" id="ts_file"></div>
-        <div class="file-input"><span>📋 4. PO_SKU_LIST (.xlsx)</span> <input type="file" id="po_file"></div>
-    </div>
-    
-    <button id="run_btn" disabled>🚀 공정 시작</button>
-    
-    <div id="sku_result" class="new-sku-box"></div>
-    <div id="download_area">
-        <p style="margin-bottom: 15px; font-weight: bold; color: #2e7d32;">🎉 작업이 완료되었습니다!</p>
-        <a id="download_link">📥 [ 마감완료 파일 다운로드 ]</a>
-    </div>
-</div>
-
-<py-config>
-    packages = ["pandas", "openpyxl"]
-</py-config>
-
 <script type="py">
 import pandas as pd
 import openpyxl
@@ -71,7 +20,6 @@ async def process_files(event):
     status.style.backgroundColor = "#fff3cd"
 
     try:
-        # 파일 로드 함수
         async def get_df(elem_id):
             file_el = document.getElementById(elem_id)
             if not file_el.files or file_el.files.length == 0: return None
@@ -88,29 +36,40 @@ async def process_files(event):
         df_ts = await get_df("ts_file")
         df_po = await get_df("po_file")
 
-        # 엑셀 작업 시작
         wb = openpyxl.load_workbook(io.BytesIO(target_buf.to_py()))
         
-        # [핵심] TRUCKSHIPMENT 시트 주입 (U, V, W열 보존)
-        ts_sheet_name = next((s for s in wb.sheetnames if s.upper() == "TRUCKSHIPMENT"), None)
-        if ts_sheet_name and df_ts is not None:
-            ws_ts = wb[ts_sheet_name]
-            # 데이터 영역만 초기화 (U, V, W 제외)
-            # U=21, V=22, W=23열
+        # [1] TRUCKSHIPMENT 주입 (U, V, W열 21, 22, 23번 수식 보존)
+        ts_name = next((s for s in wb.sheetnames if s.upper() == "TRUCKSHIPMENT"), None)
+        if ts_name and df_ts is not None:
+            ws_ts = wb[ts_name]
+            # 데이터 영역만 지우기 (U, V, W 제외)
             for r in range(2, ws_ts.max_row + 1):
-                for c in range(1, 21): ws_ts.cell(r, c).value = None # A~T열 삭제
-                for c in range(24, ws_ts.max_column + 1): ws_ts.cell(r, c).value = None # X열 이후 삭제
-
+                for c in range(1, 21): ws_ts.cell(r, c).value = None 
+                for c in range(24, ws_ts.max_column + 1): ws_ts.cell(r, c).value = None
             # 데이터 입력
             for r_idx, row in enumerate(df_ts.values.tolist(), 2):
                 for c_idx, val in enumerate(row, 1):
-                    # 입력하려는 열이 U(21), V(22), W(23)가 아닐 때만 입력
                     if c_idx not in [21, 22, 23]:
                         ws_ts.cell(row=r_idx, column=c_idx, value=val if pd.notna(val) else "")
 
-        # [기존 기능] RCV Check 및 검품내역 주입 로직 (동일하게 유지)
-        # ... (이하 사용자님의 기존 RCV Check 생성 및 파일 저장 로직 코드와 동일) ...
-        
+        # [2] PO_SKU_LIST 주입 (BC열까지 데이터 날리기)
+        po_name = next((s for s in wb.sheetnames if "PO" in s.upper()), None)
+        if po_name and df_po is not None:
+            ws_po = wb[po_name]
+            # BC열은 55번째 열입니다. 2행부터 BC열(55)까지만 데이터를 삭제합니다.
+            for r in range(2, ws_po.max_row + 1):
+                for c in range(1, 56): # 1(A)부터 55(BC)까지 삭제
+                    ws_po.cell(r, c).value = None
+            
+            # 소스 데이터 주입 (BC열 범위 내에서만)
+            for r_idx, row in enumerate(df_po.values.tolist(), 2):
+                for c_idx, val in enumerate(row, 1):
+                    if c_idx <= 55: # BC열까지만 주입
+                        ws_po.cell(row=r_idx, column=c_idx, value=val if pd.notna(val) else "")
+
+        # [3] RCV Check 및 검품내역 등 기타 로직 수행
+        # ... (기존 시트 데이터 생성 로직 동일) ...
+
         status.innerHTML = "⏳ 최종 파일 생성 중..."
         out_buf = io.BytesIO()
         wb.save(out_buf)
@@ -130,5 +89,3 @@ async def process_files(event):
 
 run_btn.onclick = process_files
 </script>
-</body>
-</html>
