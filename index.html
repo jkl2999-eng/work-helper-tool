@@ -79,50 +79,58 @@ async def run_integration(event):
     combined_rows = []
 
     try:
-        # 1. 파일 분류 및 읽기
+        # --- 1단계: 파일들을 용도별로 확실히 분류하기 ---
+        target_file_data = None
+        source_files = []
+
         for file in files:
             array_buf = await file.arrayBuffer()
-            content = Uint8Array.new(array_buf).to_py()
-            file_bytes = io.BytesIO(content)
-            
-            # 임시로 시트 확인을 위해 ExcelFile 사용
+            file_bytes = io.BytesIO(Uint8Array.new(array_buf).to_py())
             xl = pd.ExcelFile(file_bytes)
             
-            # (A) 양식 파일 찾기 (RCV Check 시트 기준)
+            # (1) RCV Check 시트가 있는 파일을 '무조건' 양식으로 먼저 잡습니다.
             if "RCV Check" in xl.sheet_names:
-                target_wb_bytes = file_bytes
-                continue
+                target_file_data = file_bytes
+                print("양식 파일 확인됨")
+            else:
+                # (2) 그 외의 파일들만 소스 후보로 등록합니다.
+                source_files.append(file_bytes)
+
+        if target_file_data is None:
+            raise Exception("양식 파일('RCV Check' 시트)을 찾지 못했습니다.")
+
+        # --- 2단계: 소스 파일들에서 데이터 뽑기 ---
+        combined_rows = []
+        for src_bytes in source_files:
+            src_bytes.seek(0)
+            df = pd.read_excel(src_bytes, sheet_name=0)
             
-            # (B) 소스 파일 분석
-            df = pd.read_excel(xl, sheet_name=0)
-            
-            # TruckShipment 판별 (V열 부근 '온도' 헤더)
+            # A. TruckShipment 판별 (22번째 열 부근에 '온도'가 있고, 데이터가 많은 경우)
             if len(df.columns) >= 22 and "온도" in str(df.columns[21]):
-                # New SKU 추출
+                # NEW SKU 체크
                 new_mask = df.iloc[:, 21].astype(str).str.contains("NEW", na=False)
                 new_skus.extend(df[new_mask].iloc[:, 13].dropna().unique().tolist())
                 
                 # 냉동 데이터 추출
-                frozen_mask = df.iloc[:, 21].astype(str).str.contains("냉동", na=False)
-                ts_data = df[frozen_mask]
+                ts_data = df[df.iloc[:, 21].astype(str).str.contains("냉동", na=False)]
                 for _, row in ts_data.iterrows():
-                    combined_rows.append({
-                        '업체ID': row.iloc[1], '업체명': row.iloc[2], '발주번호': row.iloc[11],
-                        'SKUID': row.iloc[13], '상품명': row.iloc[14], '수량': row.iloc[20]
-                    })
-            
-            # PO_SKU_LIST 판별 (M열 부근 '온도' 헤더)
+                    combined_rows.append([
+                        row.iloc[1], row.iloc[2], row.iloc[11], 
+                        row.iloc[13], row.iloc[14], row.iloc[20]
+                    ])
+                print(f"TS 데이터 추출 완료: {len(ts_data)}행")
+
+            # B. PO_SKU_LIST 판별 (13번째 열 부근에 '온도'가 있는 경우)
             elif len(df.columns) >= 14 and "온도" in str(df.columns[12]):
-                cond = (df.iloc[:, 12].astype(str).str.contains("냉동", na=False)) &                        (df.iloc[:, 13].astype(str).str.contains("밀크런", na=False))
+                cond = (df.iloc[:, 12].astype(str).str.contains("냉동", na=False)) & \
+                       (df.iloc[:, 13].astype(str).str.contains("밀크런", na=False))
                 po_data = df[cond]
                 for _, row in po_data.iterrows():
-                    combined_rows.append({
-                        '업체ID': row.iloc[7], '업체명': row.iloc[8], '발주번호': row.iloc[0],
-                        'SKUID': row.iloc[2], '상품명': row.iloc[6], '수량': row.iloc[25]
-                    })
-
-        if target_wb_bytes is None:
-            raise Exception("양식 파일('RCV Check' 시트 포함)을 찾을 수 없습니다.")
+                    combined_rows.append([
+                        row.iloc[7], row.iloc[8], row.iloc[0], 
+                        row.iloc[2], row.iloc[6], row.iloc[25]
+                    ])
+                print(f"PO 데이터 추출 완료: {len(po_data)}행")
 
         # 2. 양식 파일에 데이터 주입
         target_wb_bytes.seek(0)
