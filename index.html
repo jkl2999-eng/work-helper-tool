@@ -11,6 +11,7 @@ async def python_logic(event):
     btn = document.getElementById("run-btn")
 
     try:
+        # 파일 가져오기 (.item(0) 사용으로 JsProxy 오류 방지)
         f_target = document.getElementById("target-file").files.item(0)
         f_ts = document.getElementById("src-ts").files.item(0)
         f_po = document.getElementById("src-po").files.item(0)
@@ -25,85 +26,73 @@ async def python_logic(event):
         combined_rows = []
         new_skus = []
 
-        # --- 1. TruckShipment 분석 ---
+        # --- 1. TruckShipment (V열 온도 기준) ---
         ts_buf = await f_ts.arrayBuffer()
         ts_df = pd.read_excel(io.BytesIO(Uint8Array.new(ts_buf).to_py())).astype(str)
-        t_cols = [c for c in ts_df.columns if "온도" in str(c)]
-        if t_cols:
-            t_col = t_cols[0]
-            # NEW SKU (V열 주변)
-            new_mask = ts_df[t_col].str.contains("NEW", case=False, na=False)
-            new_skus = ts_df[new_mask].iloc[:, 13].replace('nan', '').unique().tolist()
-            # 냉동 데이터 (B, C, L, N, O, U열 순서 가정)
-            ts_f = ts_df[ts_df[t_col].str.contains("냉동", na=False)]
-            for _, row in ts_f.iterrows():
-                combined_rows.append([
-                    row.iloc[1],  # 업체ID
-                    row.iloc[2],  # 업체명
-                    row.iloc[11], # 발주번호
-                    row.iloc[13], # SKU ID
-                    row.iloc[14], # 상품명
-                    row.iloc[20]  # 수량 (U열)
-                ])
+        
+        # 물류 양식에서 V열은 21번 인덱스입니다.
+        # 만약 열 개수가 부족할 경우를 대비해 마지막 열을 참조하게 안전장치를 둡니다.
+        temp_idx = 21 if len(ts_df.columns) > 21 else len(ts_df.columns) - 1
+        
+        # NEW SKU 추출 (V열에 NEW 포함된 행의 N열(13) SKUID)
+        mask_new = ts_df.iloc[:, temp_idx].str.contains("NEW", case=False, na=False)
+        new_skus = ts_df[mask_new].iloc[:, 13].replace('nan', '').unique().tolist()
 
-        # --- 2. PO_SKU_LIST 분석 ---
+        # 냉동 데이터 추출
+        ts_f = ts_df[ts_df.iloc[:, temp_idx].str.contains("냉동", na=False)]
+        for _, row in ts_f.iterrows():
+            # B, C, L, N, O, U열 순서 (1, 2, 11, 13, 14, 20 인덱스)
+            combined_rows.append([row.iloc[1], row.iloc[2], row.iloc[11], row.iloc[13], row.iloc[14], row.iloc[20]])
+
+        # --- 2. PO_SKU_LIST (냉동/밀크런 기준) ---
         po_buf = await f_po.arrayBuffer()
         po_df = pd.read_excel(io.BytesIO(Uint8Array.new(po_buf).to_py())).astype(str)
-        p_t_cols = [c for c in po_df.columns if "온도" in str(c)]
-        if p_t_cols and len(po_df.columns) >= 14:
-            p_t, p_m = p_t_cols[0], po_df.columns[13]
-            po_f = po_df[(po_df[p_t].str.contains("냉동", na=False)) & (po_df[p_m].str.contains("밀크런", na=False))]
-            for _, row in po_f.iterrows():
-                combined_rows.append([
-                    row.iloc[7],  # 업체ID (H열)
-                    row.iloc[8],  # 업체명 (I열)
-                    row.iloc[0],  # 발주번호 (A열)
-                    row.iloc[2],  # SKU ID (C열)
-                    row.iloc[6],  # 상품명 (G열)
-                    row.iloc[25]  # 수량 (Z열)
-                ])
+        # PO_SKU_LIST는 보통 T열(19)이나 V열(21)이 온도이므로 '온도' 포함 열 자동 탐색
+        p_t_cols = [i for i, c in enumerate(po_df.columns) if "온도" in str(c)]
+        p_temp_idx = p_t_cols[0] if p_t_cols else 19
+        p_milk_idx = 13 # N열 밀크런 여부
+        
+        po_f = po_df[(po_df.iloc[:, p_temp_idx].str.contains("냉동", na=False)) & 
+                     (po_df.iloc[:, p_milk_idx].str.contains("밀크런", na=False))]
+        for _, row in po_f.iterrows():
+            # H, I, A, C, G, Z열 (7, 8, 0, 2, 6, 25 인덱스)
+            combined_rows.append([row.iloc[7], row.iloc[8], row.iloc[0], row.iloc[2], row.iloc[6], row.iloc[25]])
 
-        # --- 3. 검품내역 분석 ---
+        # --- 3. 검품내역 (단순 추출) ---
         check_buf = await f_check.arrayBuffer()
         check_df = pd.read_excel(io.BytesIO(Uint8Array.new(check_buf).to_py())).astype(str)
         for _, row in check_df.iterrows():
             if len(row) >= 6:
                 combined_rows.append([row.iloc[0], row.iloc[1], row.iloc[2], row.iloc[3], row.iloc[4], row.iloc[5]])
 
-        # --- 4. 양식 주입 (정밀 보정) ---
+        # --- 4. 양식 주입 ---
         target_buf = await f_target.arrayBuffer()
         target_io = io.BytesIO(Uint8Array.new(target_buf).to_py())
         
-        # 주입할 데이터 정리
-        final_df = pd.DataFrame(combined_rows)
-        
-        # openpyxl을 직접 사용하여 시트 내용을 초기화한 후 주입
         from openpyxl import load_workbook
         wb = load_workbook(target_io)
         if 'RCV Check' in wb.sheetnames:
             ws = wb['RCV Check']
-            # 데이터 시작점(2행)부터 아래로 500행까지 기존 내용 삭제 (깔끔하게 비우기)
+            # 기존 데이터 영역 청소 (2행~500행)
             for row in ws.iter_rows(min_row=2, max_row=500, min_col=1, max_col=6):
-                for cell in row:
-                    cell.value = None
+                for cell in row: cell.value = None
             
             # 새 데이터 입력
             for r_idx, row_data in enumerate(combined_rows, start=2):
                 for c_idx, value in enumerate(row_data, start=1):
                     ws.cell(row=r_idx, column=c_idx, value=value)
         
-        # 메모리에 저장
         output = io.BytesIO()
         wb.save(output)
         output.seek(0)
 
-        # UI 업데이트
+        # 결과 표시
         if new_skus and any(new_skus):
             sku_area.style.display = "block"
             document.getElementById("new-sku-list").innerText = ", ".join([str(s) for s in new_skus if s])
 
         url = URL.createObjectURL(Blob.new([Uint8Array.new(output.read())], {"type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}))
-        status.innerText = f"✅ 총 {len(combined_rows)}건의 데이터를 정확히 주입했습니다."
+        status.innerText = f"✅ 처리 완료 ({len(combined_rows)}건 통합)"
         dl_area.style.display = "block"
         
         def dl_handler(e):
@@ -113,7 +102,7 @@ async def python_logic(event):
 
     except Exception as e:
         status.className = "error"
-        status.innerText = f"❌ 오류 발생: {str(e)}"
+        status.innerText = f"❌ 오류: {str(e)}"
     finally:
         btn.disabled = False
 
