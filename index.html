@@ -134,20 +134,36 @@ async def process_files(event):
         status.innerHTML = "⏳ 양식 시트에 데이터를 주입하는 중..."
         await asyncio.sleep(0.1)
         wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()))
-        
+
         def fill_safe(s_name, df_source):
             if s_name not in wb.sheetnames or df_source is None: return
             ws = wb[s_name]
-            # 기존 값 삭제 (수식 보호)
-            for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                for cell in row:
-                    if cell.data_type != 'f': cell.value = None
             
-            headers = {str(ws.cell(1, c).value).strip().upper().replace(" ", ""): c for c in range(1, ws.max_column + 1)}
+            # 1. 시트별로 삭제 및 주입할 '마지노선' 열 번호 설정
+            # BC열 = 55번째 열, V열 = 22번째 열
+            if s_name == 'PO_SKU_LIST':
+                limit_col = 55 
+            elif s_name == 'TruckShipment':
+                limit_col = 22
+            else:
+                limit_col = ws.max_column # 그 외 시트는 데이터가 있는 끝까지
+            
+            # 2. 지정된 열 범위(1열부터 limit_col까지) 내에서만 데이터 청소
+            # 수식(Formula)은 건드리지 않고 일반 값만 지웁니다.
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=limit_col):
+                for cell in row:
+                    if cell.data_type != 'f': 
+                        cell.value = None
+            
+            # 3. 데이터 주입 시에도 헤더가 지정된 범위 내에 있는 것만 처리
+            headers = {str(ws.cell(1, c).value).strip().upper().replace(" ", ""): c 
+                       for c in range(1, limit_col + 1)}
+            
             for r_idx, row_dict in enumerate(df_source.to_dict('records'), 2):
                 for col_name, val in row_dict.items():
                     if col_name in headers:
                         cell = ws.cell(r_idx, headers[col_name])
+                        # 수식이 걸려있는 셀은 덮어쓰지 않고 보호
                         if cell.data_type != 'f':
                             cell.value = val if pd.notna(val) else ""
 
