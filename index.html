@@ -68,11 +68,38 @@ async def process_files(event):
         status.innerHTML = "⏳ 파일을 분석 중입니다..."
         await asyncio.sleep(0.1)
 
-        async def get_df(elem_id):
-            file_el = document.getElementById(elem_id)
-            if not file_el.files or file_el.files.length == 0: return None
-            array_buf = await file_el.files.item(0).arrayBuffer()
-            return pd.read_excel(io.BytesIO(array_buf.to_py())).dropna(how='all')
+    async def get_df(elem_id):
+       file_el = document.getElementById(elem_id)
+       if not file_el.files or file_el.files.length == 0: return None
+    
+       file = file_el.files.item(0)
+       file_name = file.name.lower()
+       array_buf = await file.arrayBuffer()
+       py_data = io.BytesIO(array_buf.to_py())
+
+         # 1. 엑셀 파일 (.xlsx)
+         if file_name.endswith('.xlsx'):
+            return pd.read_excel(py_data, engine='openpyxl').dropna(how='all')
+    
+         # 2. CSV 파일 (.csv) - 두 종류 모두 대응
+         elif file_name.endswith('.csv'):
+             try:
+               # 먼저 UTF-8로 시도
+               return pd.read_csv(py_data, encoding='utf-8').dropna(how='all')
+             except:
+               # 실패하면 CP949(일반 CSV)로 재시도
+            py_data.seek(0) # 읽기 위치 초기화
+            return pd.read_csv(py_data, encoding='cp949').dropna(how='all')
+            
+        # 3. HTML 파일 (.html / .xls 형태의 가짜 엑셀)
+            elif file_name.endswith('.html') or file_name.endswith('.xls'):
+              try:
+             # HTML 내의 표를 읽어 첫 번째 표 반환
+            return pd.read_html(py_data)[0].dropna(how='all')
+            except:
+              return None
+    
+               return None
 
         df_target_raw = await document.getElementById("target_file").files.item(0).arrayBuffer()
         dfs = {
