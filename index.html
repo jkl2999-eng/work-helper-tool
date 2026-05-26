@@ -16,28 +16,39 @@
         #status { margin-top: 20px; padding: 15px; border-radius: 8px; display: block; text-align: center; background-color: #f8f9fa; border: 1px solid #eee; }
         .new-sku-box { background-color: #fff9c4; border-left: 5px solid #fbc02d; padding: 15px; margin-top: 20px; display: none; border-radius: 4px; }
         .sku-count { margin-top: 10px; font-weight: bold; color: #d32f2f; border-top: 1px solid #fbc02d; padding-top: 5px; }
+        #step2_area { display: none; margin-top: 25px; border-top: 2px solid #1e88e5; padding-top: 25px; }
         #download_area { display: none; margin-top: 30px; text-align: center; padding: 20px; border: 2px solid #4caf50; border-radius: 8px; }
+        .step-title { font-size: 16px; font-weight: bold; color: #333; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v2.0)</h2>
-    <div id="status">✅ 준비 완료! 파일을 선택하고 공정 시작을 눌러주세요.</div>
+    <h2>🚀 리시브 마감 자동화 (v3.1)</h2>
+    <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
+        <div class="step-title">[1단계] New SKU 확인 및 Truck 주입</div>
         <div class="file-input"><span>1. 마감 양식(.xlsx)</span> <input type="file" id="target_file"></div>
-        <div class="file-input"><span>2. 검품 내역(.xlsx)</span> <input type="file" id="check_file"></div>
-        <div class="file-input"><span>3. TruckShipment(.xlsx)</span> <input type="file" id="ts_file"></div>
-        <div class="file-input"><span>4. PO_SKU_LIST(.xlsx)</span> <input type="file" id="po_file"></div>
+        <div class="file-input"><span>2. TruckShipment(.xlsx/.csv/.html)</span> <input type="file" id="ts_file"></div>
     </div>
-    
-    <button id="run_btn">🚀 공정 시작</button>
+    <button id="run_step1_btn">🚀 1단계: New SKU 추출 및 Truck 주입</button>
     
     <div id="sku_result" class="new-sku-box"></div>
+
+    <div id="step2_area">
+        <div class="file-box" style="border-color: #1e88e5;">
+            <div class="step-title" style="color: #1e88e5;">[2단계] 나머지 데이터 주입 및 최종 마감</div>
+            <div class="file-input"><span>3. SKU_T 추가 데이터(.xlsx/.csv/.html)</span> <input type="file" id="sku_t_add_file"></div>
+            <div class="file-input"><span>4. 검품 내역(.xlsx/.csv/.html)</span> <input type="file" id="check_file"></div>
+            <div class="file-input"><span>5. PO_SKU_LIST(.xlsx/.csv/.html)</span> <input type="file" id="po_file"></div>
+        </div>
+        <button id="run_step2_btn" style="background-color: #2e7d32;">🎉 2단계: 최종 마감 완료하기</button>
+    </div>
+    
     <div id="download_area">
-        <p>🎉 작업이 완료되었습니다!</p>
-        <a id="download_link" style="font-size: 20px; color: #2e7d32; font-weight: bold; text-decoration: none;">📥 [ 마감완료 파일 다운로드 ]</a>
+        <p>🎉 모든 마감 작업이 완료되었습니다!</p>
+        <a id="download_link" style="font-size: 20px; color: #2e7d32; font-weight: bold; text-decoration: none;">📥 [ 마감완료 최종 파일 다운로드 ]</a>
     </div>
 </div>
 
@@ -49,8 +60,13 @@
 import pandas as pd
 import openpyxl
 import asyncio
-from js import Uint8Array, URL, document, Blob
+from js import Uint8Array, URL, document, Blob, window
 import io
+
+# 전역 변수로 설정하여 1단계 데이터를 2단계까지 안전하게 유지
+wb = None
+df_ts_global = None
+temp_col_global = None
 
 async def get_df(elem_id):
     file_el = document.getElementById(elem_id)
@@ -63,117 +79,150 @@ async def get_df(elem_id):
     py_data = io.BytesIO(array_buf.to_py())
 
     try:
-        # 1. 엑셀 파일 처리 (수식 결과값을 위해 engine 명시)
         if file_name.endswith('.xlsx'):
             return pd.read_excel(py_data, engine='openpyxl').dropna(how='all')
-        
-        # 2. CSV 파일 처리 (UTF-8 및 CP949 대응)
         elif file_name.endswith('.csv'):
             try:
                 return pd.read_csv(py_data, encoding='utf-8').dropna(how='all')
             except:
                 py_data.seek(0)
                 return pd.read_csv(py_data, encoding='cp949').dropna(how='all')
-                
-        # 3. HTML/XLS (가짜 엑셀) 처리
         elif file_name.endswith('.html') or file_name.endswith('.xls'):
             return pd.read_html(py_data)[0].dropna(how='all')
-            
     except Exception as e:
         print(f"파일 로드 오류 ({file_name}): {str(e)}")
         return None
-    
     return None
 
-async def process_files(event):
+def fill_safe_logic(ws, df_source, limit_col):
+    # 기존 값 삭제 (수식 보호)
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=limit_col):
+        for cell in row:
+            if cell.data_type != 'f': 
+                cell.value = None
+    
+    headers = {str(ws.cell(1, c).value).strip().upper().replace(" ", ""): c for c in range(1, limit_col + 1)}
+    for r_idx, row_dict in enumerate(df_source.to_dict('records'), 2):
+        for col_name, val in row_dict.items():
+            if col_name in headers:
+                cell = ws.cell(r_idx, headers[col_name])
+                if cell.data_type != 'f':
+                    cell.value = val if pd.notna(val) else ""
+
+async def process_step1(event):
+    global wb, df_ts_global, temp_col_global
     status = document.getElementById("status")
     sku_div = document.getElementById("sku_result")
-    status.style.display = "block"
+    
+    status.innerHTML = "⏳ 1단계 공정 시작 중..."
+    status.style.backgroundColor = "#fff3cd"
     sku_div.style.display = "none"
-    status.innerHTML = "⏳ 공정을 시작합니다..."
+
+    try:
+        target_el = document.getElementById("target_file")
+        if not target_el.files or target_el.files.length == 0:
+            raise Exception("1. 마감 양식 파일을 선택해주세요.")
+            
+        df_target_raw = await target_el.files.item(0).arrayBuffer()
+        df_ts = await get_df("ts_file")
+        
+        if df_ts is None:
+            raise Exception("2. TruckShipment 파일을 선택해주세요.")
+
+        # 열 이름 표준화
+        df_ts.columns = [str(c).strip().upper().replace(" ", "") for c in df_ts.columns]
+        df_ts_global = df_ts
+
+        # 양식 로드 및 1단계 데이터 주입 (Truck V열=22까지 청소 및 주입)
+        wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()))
+        ws_ts = wb['TruckShipment']
+        fill_safe_logic(ws_ts, df_ts, 22)
+
+        # New SKU 추출
+        temp_col = next((c for c in df_ts.columns if "온도" in c), None)
+        id_col = next((c for c in df_ts.columns if "SKUID" in c), None)
+        temp_col_global = temp_col
+        
+        found_ids = []
+        if temp_col and id_col:
+            mask = df_ts[temp_col].astype(str).str.contains('NEW', case=False, na=False)
+            raw_ids = df_ts.loc[mask, id_col].dropna().unique().tolist()
+            found_ids = [str(int(float(x))) if str(x).replace('.','').replace('-','').isdigit() else str(x) for x in raw_ids]
+
+        # ID 문자열 생성 (쉼표 + 한 칸 띄어쓰기 형태)
+        id_string = ", ".join(found_ids) if found_ids else ""
+
+        sku_div.style.display = "block"
+        if found_ids:
+            sku_div.innerHTML = f"""
+                📢 <b>New SKU 발견 리스트:</b><br>
+                <div style="background: white; padding: 10px; margin: 10px 0; border: 1px solid #fbc02d; word-break: break-all; max-height: 100px; overflow-y: auto;">
+                    {id_string}
+                </div>
+                <button id="copy_btn" style="padding: 8px 15px; font-size: 14px; background-color: #fbc02d; color: #333; width: auto; margin-bottom: 10px;">
+                    📋 SKU ID 복사하기
+                </button>
+                <div class="sku-count">👉 총 {len(found_ids)}개의 New SKU가 발견되었습니다.</div>
+            """
+            
+            def copy_to_clipboard(e):
+                window.navigator.clipboard.writeText(id_string)
+                window.alert("SKU ID 리스트가 복사되었습니다! WMS에서 조회 후 마스터 데이터를 다운받으세요.")
+                document.getElementById("step2_area").style.display = "block"
+                document.getElementById("status").innerHTML = "✅ 1단계 완료! 2단계 파일들을 업로드한 후 마감 완료 버튼을 눌러주세요."
+                document.getElementById("status").style.backgroundColor = "#e3f2fd"
+                
+            document.getElementById("copy_btn").onclick = copy_to_clipboard
+            status.innerHTML = "⚠️ New SKU가 있습니다! 복사 버튼을 눌러 마스터 데이터를 다운받고 2단계를 진행하세요."
+        else:
+            sku_div.innerHTML = "✅ 발견된 New SKU가 없습니다. 바로 2단계를 진행하시면 됩니다."
+            document.getElementById("step2_area").style.display = "block"
+            status.innerHTML = "✅ New SKU 없음! 2단계 파일들을 업로드한 후 마감 완료 버튼을 눌러주세요."
+            document.getElementById("status").style.backgroundColor = "#e3f2fd"
+
+    except Exception as e:
+        status.innerHTML = f"❌ 1단계 오류 발생: {str(e)}"
+        status.style.backgroundColor = "#ffcdd2"
+
+async def process_step2(event):
+    global wb, df_ts_global, temp_col_global
+    status = document.getElementById("status")
+    status.innerHTML = "⏳ 2단계 최종 마감 공정 진행 중..."
     status.style.backgroundColor = "#fff3cd"
 
     try:
-        # 1. 데이터 읽기
-        status.innerHTML = "⏳ 파일을 분석 중입니다... (최대 1분 소요)"
-        await asyncio.sleep(0.1)
+        if wb is None:
+            raise Exception("1단계 장부가 메모리에 없습니다. 1단계를 먼저 완료해주세요.")
 
-        target_el = document.getElementById("target_file")
-        if not target_el.files or target_el.files.length == 0:
-            raise Exception("마감 양식 파일을 선택해주세요.")
+        # 2단계 파일 로드
+        df_sku_t_add = await get_df("sku_t_add_file")
+        df_check = await get_df("check_file")
+        df_po = await get_df("po_file")
+
+        # [수정] SKU_T 시트 추가 로직 (1행 제목 제외하고 2행 데이터부터 삽입)
+        if df_sku_t_add is not None and 'SKU_T' in wb.sheetnames:
+            ws_sku_t = wb['SKU_T']
+            last_row = ws_sku_t.max_row
             
-        df_target_raw = await target_el.files.item(0).arrayBuffer()
-        
-        dfs = {
-            "검품 내역": await get_df("check_file"),
-            "TruckShipment": await get_df("ts_file"),
-            "PO_SKU_LIST": await get_df("po_file")
-        }
+            # Pandas가 자동으로 1행을 제외한 순수 데이터만 values에 들고 있으므로 안전하게 순차 주입합니다.
+            for r_idx, row in enumerate(df_sku_t_add.values.tolist(), 1):
+                for c_idx, val in enumerate(row, 1):
+                    ws_sku_t.cell(row=last_row + r_idx, column=c_idx, value=val if pd.notna(val) else "")
 
-        # 열 이름 표준화 (공백 제거, 대문자화)
-        for key in dfs:
-            if dfs[key] is not None:
-                dfs[key].columns = [str(c).strip().upper().replace(" ", "") for c in dfs[key].columns]
+        # 검품 내역 주입 (시트 끝까지 청소 및 주입)
+        if df_check is not None:
+            df_check.columns = [str(c).strip().upper().replace(" ", "") for c in df_check.columns]
+            fill_safe_logic(wb['검품 내역'], df_check, wb['검품 내역'].max_column)
 
-        # 2. New SKU 추출 로직
-        df_ts = dfs["TruckShipment"]
-        if df_ts is not None:
-            temp_col = next((c for c in df_ts.columns if "온도" in c), None)
-            id_col = next((c for c in df_ts.columns if "SKUID" in c), None)
-            
-            if temp_col and id_col:
-                mask = df_ts[temp_col].astype(str).str.contains('NEW', case=False, na=False)
-                raw_ids = df_ts.loc[mask, id_col].dropna().unique().tolist()
-                found_ids = [str(int(float(x))) if str(x).replace('.','').isdigit() else str(x) for x in raw_ids]
-                
-                if found_ids:
-                    sku_div.style.display = "block"
-                    sku_div.innerHTML = f"📢 <b>New SKU 발견 리스트:</b><br>{', '.join(found_ids)}<div class='sku-count'>👉 총 {len(found_ids)}개의 New SKU가 발견되었습니다.</div>"
+        # PO_SKU_LIST 주입 (BC열=55까지 청소 및 주입)
+        if df_po is not None:
+            df_po.columns = [str(c).strip().upper().replace(" ", "") for c in df_po.columns]
+            fill_safe_logic(wb['PO_SKU_LIST'], df_po, 55)
 
-        # 3. 데이터 주입
-        status.innerHTML = "⏳ 양식 시트에 데이터를 주입하는 중..."
-        await asyncio.sleep(0.1)
-        wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()))
-
-        def fill_safe(s_name, df_source):
-            if s_name not in wb.sheetnames or df_source is None: return
-            ws = wb[s_name]
-            
-            # 1. 시트별로 삭제 및 주입할 '마지노선' 열 번호 설정
-            # BC열 = 55번째 열, V열 = 22번째 열
-            if s_name == 'PO_SKU_LIST':
-                limit_col = 55 
-            elif s_name == 'TruckShipment':
-                limit_col = 22
-            else:
-                limit_col = ws.max_column # 그 외 시트는 데이터가 있는 끝까지
-            
-            # 2. 지정된 열 범위(1열부터 limit_col까지) 내에서만 데이터 청소
-            # 수식(Formula)은 건드리지 않고 일반 값만 지웁니다.
-            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=limit_col):
-                for cell in row:
-                    if cell.data_type != 'f': 
-                        cell.value = None
-            
-            # 3. 데이터 주입 시에도 헤더가 지정된 범위 내에 있는 것만 처리
-            headers = {str(ws.cell(1, c).value).strip().upper().replace(" ", ""): c 
-                       for c in range(1, limit_col + 1)}
-            
-            for r_idx, row_dict in enumerate(df_source.to_dict('records'), 2):
-                for col_name, val in row_dict.items():
-                    if col_name in headers:
-                        cell = ws.cell(r_idx, headers[col_name])
-                        # 수식이 걸려있는 셀은 덮어쓰지 않고 보호
-                        if cell.data_type != 'f':
-                            cell.value = val if pd.notna(val) else ""
-
-        for s in ['검품 내역', 'TruckShipment', 'PO_SKU_LIST']:
-            fill_safe(s, dfs[s])
-
-        # 4. RCV Check 로직
-        status.innerHTML = "⏳ RCV Check 데이터를 생성하는 중..."
+        # RCV Check 시트 생성 로직
         ws_rcv = wb['RCV Check']
-        if ws_rcv.max_row >= 2: ws_rcv.delete_rows(2, ws_rcv.max_row)
+        if ws_rcv.max_row >= 2: 
+            ws_rcv.delete_rows(2, ws_rcv.max_row)
 
         def get_val(row, keywords, cols):
             for k in keywords:
@@ -183,8 +232,8 @@ async def process_files(event):
 
         curr_r = 2
         # TS 냉동 필터 주입
-        if df_ts is not None:
-            ts_f = df_ts[df_ts[temp_col].astype(str).str.contains('냉동', na=False)] if temp_col else df_ts
+        if df_ts_global is not None:
+            ts_f = df_ts_global[df_ts_global[temp_col_global].astype(str).str.contains('냉동', na=False)] if temp_col_global else df_ts_global
             for _, row in ts_f.iterrows():
                 ws_rcv.cell(curr_r, 1, get_val(row, ["업체ID"], ts_f.columns))
                 ws_rcv.cell(curr_r, 2, get_val(row, ["업체명"], ts_f.columns))
@@ -195,7 +244,6 @@ async def process_files(event):
                 curr_r += 1
 
         # PO 냉동/밀크런 필터 주입
-        df_po = dfs["PO_SKU_LIST"]
         if df_po is not None:
             p_temp = next((c for c in df_po.columns if "온도" in c), None)
             p_type = next((c for c in df_po.columns if "운송" in c or "밀크런" in c), None)
@@ -211,24 +259,25 @@ async def process_files(event):
                 ws_rcv.cell(curr_r, 6, get_val(row, ["업체확정"], po_f.columns))
                 curr_r += 1
 
-        # 5. 최종 저장 및 다운로드
+        # 최종 저장 및 다운로드 활성화
         out_buf = io.BytesIO()
         wb.save(out_buf)
         blob = Blob.new([Uint8Array.new(out_buf.getvalue())], { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
         
         link = document.getElementById("download_link")
         link.href = URL.createObjectURL(blob)
-        link.download = "리시브_마감_결과.xlsx"
+        link.download = f"리시브_마감_최종_{pd.Timestamp.now().strftime('%m%d_%H%M')}.xlsx"
         document.getElementById("download_area").style.display = "block"
-        status.innerHTML = "✅ 모든 작업이 완료되었습니다!"
+        status.innerHTML = "✅ 모든 작업이 완료되었습니다! 최종 파일을 다운로드하세요."
         status.style.backgroundColor = "#c8e6c9"
 
     except Exception as e:
-        status.innerHTML = f"❌ 오류 발생: {str(e)}"
+        status.innerHTML = f"❌ 2단계 오류 발생: {str(e)}"
         status.style.backgroundColor = "#ffcdd2"
         print(f"Error details: {e}")
 
-document.getElementById("run_btn").onclick = process_files
+document.getElementById("run_step1_btn").onclick = process_step1
+document.getElementById("run_step2_btn").onclick = process_step2
 </script>
 </body>
 </html>
