@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v3.7)</h2>
+    <h2>🚀 리시브 마감 자동화 (v3.9)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -72,6 +72,7 @@ wb = None
 df_ts_global = None
 temp_col_global = None
 
+# [유령 문자 정화 필터]
 ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
 def clean_text(val):
     if isinstance(val, str):
@@ -105,11 +106,17 @@ async def get_df(elem_id):
     return None
 
 def fill_safe_logic(ws, df_source, limit_col):
+    # 1. [핵심 추가] 필터 꼬임 방지: 엑셀 양식의 모든 행 숨김 상태를 강제로 해제!
+    for r in range(2, ws.max_row + 1):
+        ws.row_dimensions[r].hidden = False
+
+    # 2. 기존 데이터 초기화 (수식은 건드리지 않음)
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=limit_col):
         for cell in row:
             if cell.data_type != 'f': 
                 cell.value = None
     
+    # 3. 새 데이터 매핑 주입
     headers = {str(ws.cell(1, c).value).strip().upper().replace(" ", ""): c for c in range(1, limit_col + 1)}
     for r_idx, row_dict in enumerate(df_source.to_dict('records'), 2):
         for col_name, val in row_dict.items():
@@ -140,7 +147,8 @@ async def process_step1(event):
 
         df_ts.columns = [str(c).strip().upper().replace(" ", "") for c in df_ts.columns]
         df_ts_global = df_ts
-    
+
+        # [핵심 수정] 외부 링크로 인한 복구 에러창 완벽 차단 옵션 (keep_links=False)
         wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()), keep_links=False)
         
         ws_ts = wb['TruckShipment']
@@ -218,7 +226,6 @@ async def process_step2(event):
         df_check = await get_df("check_file")
         df_po = await get_df("po_file")
 
-        # 1. SKU_T 마스터 데이터 누적 반영
         if df_sku_t_add is not None and 'SKU_T' in wb.sheetnames:
             ws_sku_t = wb['SKU_T']
             last_row = ws_sku_t.max_row
@@ -233,8 +240,6 @@ async def process_step2(event):
                         cell = ws_sku_t.cell(row=target_row, column=sku_t_headers[col_name])
                         cell.value = clean_text(val) if pd.notna(val) else ""
 
-        # 2. [수식 해결책 1] SKU_T 마스터 정보를 바탕으로 파이썬 내부 가상 온도 맵(사전) 빌드
-        # 1열(SKUID)과 59열(BG열, 온도구분)을 강제 동기화
         ws_sku_t = wb['SKU_T']
         sku_to_temp = {}
         for r in range(2, ws_sku_t.max_row + 1):
@@ -255,7 +260,6 @@ async def process_step2(event):
             df_po.columns = [str(c).strip().upper().replace(" ", "") for c in df_po.columns]
             fill_safe_logic(wb['PO_SKU_LIST'], df_po, 55)
 
-        # 3. TruckShipment 시트의 '입고수량' 수식 열 문자 위치 추적
         ws_ts_sheet = wb['TruckShipment']
         ts_qty_col_letter = None
         for c in range(1, ws_ts_sheet.max_column + 1):
@@ -263,13 +267,10 @@ async def process_step2(event):
             if "입고수량" in h_val or "수량" in h_val or "QTY" in h_val.upper():
                 ts_qty_col_letter = get_column_letter(c)
                 break
-        if not ts_qty_col_letter:
-            ts_qty_col_letter = "F" # 못 찾을 경우 안전 장치용 기본값
+        if not ts_qty_col_letter: ts_qty_col_letter = "F"
 
-        # RCV Check 초기화
         ws_rcv = wb['RCV Check']
-        if ws_rcv.max_row >= 2: 
-            ws_rcv.delete_rows(2, ws_rcv.max_row)
+        if ws_rcv.max_row >= 2: ws_rcv.delete_rows(2, ws_rcv.max_row)
 
         def get_val(row, keywords, cols):
             for k in keywords:
@@ -278,35 +279,22 @@ async def process_step2(event):
             return ""
 
         curr_r = 2
-        # 4. TruckShipment 데이터 주입 및 필터 매칭
         if df_ts_global is not None:
             id_col_name = next((c for c in df_ts_global.columns if any(k in c for k in ["SKUID", "SKU_ID", "상품ID", "상품코드"])), None)
-            
-            # fill_safe_logic에서 df_ts_global의 데이터는 정확히 2행부터 순서대로 매핑 주입되었습니다.
-            # 따라서 ts_row_idx(엑셀 행 번호)는 loop 카운트와 완벽히 1:1 대응합니다.
             for idx, row in enumerate(df_ts_global.to_dict('records'), 2):
                 raw_sku = row.get(id_col_name, "")
-                try:
-                    sku_str = str(int(float(raw_sku))).strip()
-                except:
-                    sku_str = str(raw_sku).strip()
+                try: sku_str = str(int(float(raw_sku))).strip()
+                except: sku_str = str(raw_sku).strip()
                 
-                # 엑셀 엔진 대신 파이썬 마스터 사전에서 직독직해로 '냉동' 여부 판별
-                sku_temp = sku_to_temp.get(sku_str, "")
-                
-                if "냉동" in sku_temp:
+                if "냉동" in sku_to_temp.get(sku_str, ""):
                     ws_rcv.cell(curr_r, 1, clean_text(get_val(row, ["업체ID"], df_ts_global.columns)))
                     ws_rcv.cell(curr_r, 2, clean_text(get_val(row, ["업체명"], df_ts_global.columns)))
                     ws_rcv.cell(curr_r, 3, clean_text(get_val(row, ["발주번호"], df_ts_global.columns)))
                     ws_rcv.cell(curr_r, 4, clean_text(sku_str))
                     ws_rcv.cell(curr_r, 5, clean_text(get_val(row, ["상품명", "SKU명", "SKU이름"], df_ts_global.columns)))
-                    
-                    # [수식 해결책 2] 값을 복사하는 대신, Truck 시트의 수량 셀을 직접 겨냥하는 참조 수식을 입력!
-                    # 사용자가 '편집 사용'을 누르면 Truck 시트와 RCV Check 시트가 동시에 번쩍이며 살아납니다.
                     ws_rcv.cell(curr_r, 6, f"=TruckShipment!{ts_qty_col_letter}{idx}")
                     curr_r += 1
 
-        # PO 내역 필터링 및 주입 (PO는 고정 텍스트이므로 기존 로직 유지)
         if df_po is not None:
             p_temp = next((c for c in df_po.columns if "온도" in c), None)
             p_type = next((c for c in df_po.columns if "운송" in c or "밀크런" in c), None)
@@ -321,6 +309,16 @@ async def process_step2(event):
                 ws_rcv.cell(curr_r, 5, clean_text(get_val(row, ["상품명", "SKU명", "SKU이름"], po_f.columns)))
                 ws_rcv.cell(curr_r, 6, clean_text(get_val(row, ["업체확정"], po_f.columns)))
                 curr_r += 1
+
+        # =========================================================================
+        # 🎯 [미입고 시트 직주입 알고리즘 구역 (추후 구현)]
+        # =========================================================================
+        if '미입고' in wb.sheetnames:
+            ws_mi = wb['미입고']
+            if ws_mi.max_row >= 2:
+                ws_mi.delete_rows(2, ws_mi.max_row)
+            pass
+        # =========================================================================
 
         out_buf = io.BytesIO()
         wb.save(out_buf)
