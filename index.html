@@ -140,8 +140,8 @@ async def process_step1(event):
 
         df_ts.columns = [str(c).strip().upper().replace(" ", "") for c in df_ts.columns]
         df_ts_global = df_ts
-
-        wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()))
+    
+        wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()), keep_links=False)
         
         ws_ts = wb['TruckShipment']
         fill_safe_logic(ws_ts, df_ts, 22)
