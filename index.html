@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v4.8 - 정밀 타겟팅 패치)</h2>
+    <h2>🚀 리시브 마감 자동화 (v4.9 - SUMIFS 순정 패치)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -261,7 +261,6 @@ async def process_step2(event):
             df_po.columns = [str(c).strip().upper().replace(" ", "") for c in df_po.columns]
             fill_safe_logic(wb['PO_SKU_LIST'], df_po, 55)
 
-        # 💡 [핵심 패치 1] TruckShipment에서 '입고수량'을 1순위로 강제 저격합니다.
         ws_ts_sheet = wb['TruckShipment']
         ts_qty_col_letter = None
         for c in range(1, ws_ts_sheet.max_column + 1):
@@ -277,7 +276,6 @@ async def process_step2(event):
                     break
         if not ts_qty_col_letter: ts_qty_col_letter = "F"
 
-        # 💡 [핵심 패치 2] PO_SKU_LIST의 SKU ID 열과 발주수량 열 위치를 스스로 탐지합니다.
         po_sku_col_letter = "C"
         po_qty_col_letter = "X"
         ws_po_sheet = wb['PO_SKU_LIST'] if 'PO_SKU_LIST' in wb.sheetnames else None
@@ -341,7 +339,7 @@ async def process_step2(event):
                 curr_r += 1
 
         # =========================================================================
-        # 🎯 미입고 시트 직주입 
+        # 🎯 미입고 시트 직주입 (v4.9 순정 수식 완벽 복원)
         # =========================================================================
         if '미입고' in wb.sheetnames:
             ws_mi = wb['미입고']
@@ -375,8 +373,8 @@ async def process_step2(event):
                 if len(item['rcv_rows']) == 1: ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_rows'][0]}")
                 else: ws_mi.cell(row=curr_mi_row, column=6, value="=SUM(" + ",".join([f"'RCV Check'!F{r}" for r in item['rcv_rows']]) + ")")
                 
-                # 💡 [핵심 패치 3] G열 매입수량에 완벽한 SUMIF를 심어 엑셀이 직접 발주수량을 긁어오도록 지시!
-                ws_mi.cell(row=curr_mi_row, column=7, value=f"=SUMIF('PO_SKU_LIST'!{po_sku_col_letter}:{po_sku_col_letter}, C{curr_mi_row}, 'PO_SKU_LIST'!{po_qty_col_letter}:{po_qty_col_letter})")
+                # 💡 [핵심 패치 3] 작은따옴표를 싹 제거한 완벽한 엑셀 순정 SUMIFS 수식 주입!
+                ws_mi.cell(row=curr_mi_row, column=7, value=f"=SUMIFS(PO_SKU_LIST!{po_qty_col_letter}:{po_qty_col_letter},PO_SKU_LIST!{po_sku_col_letter}:{po_sku_col_letter},C{curr_mi_row})")
                 
                 ws_mi.cell(row=curr_mi_row, column=12, value=f'=IF(H{curr_mi_row}="미검품",0,IF(F{curr_mi_row}="","",F{curr_mi_row}-G{curr_mi_row}-H{curr_mi_row}-I{curr_mi_row}-J{curr_mi_row}-K{curr_mi_row}))')
                 
