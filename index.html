@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v4.0)</h2>
+    <h2>🚀 리시브 마감 자동화 (v4.1)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -274,7 +274,7 @@ async def process_step2(event):
             return ""
 
         curr_r = 2
-        rcv_rows = [] # 🚀 정렬 및 미입고 주입을 위한 임시 저장소
+        rcv_rows = []
         
         if df_ts_global is not None:
             id_col_name = next((c for c in df_ts_global.columns if any(k in c for k in ["SKUID", "SKU_ID", "상품ID", "상품코드"])), None)
@@ -298,7 +298,8 @@ async def process_step2(event):
                     ws_rcv.cell(curr_r, 5, c5)
                     ws_rcv.cell(curr_r, 6, c6)
                     
-                    rcv_rows.append({'c1':c1, 'c2':c2, 'c3':c3, 'c4':c4, 'c5':c5, 'c6':c6})
+                    # 🚀 rcv_row에 RCV Check 시트의 행 번호를 기록!
+                    rcv_rows.append({'c1':c1, 'c2':c2, 'c3':c3, 'c4':c4, 'c5':c5, 'rcv_row': curr_r})
                     curr_r += 1
 
         if df_po is not None:
@@ -322,17 +323,17 @@ async def process_step2(event):
                 ws_rcv.cell(curr_r, 5, c5)
                 ws_rcv.cell(curr_r, 6, c6)
                 
-                rcv_rows.append({'c1':c1, 'c2':c2, 'c3':c3, 'c4':c4, 'c5':c5, 'c6':c6})
+                rcv_rows.append({'c1':c1, 'c2':c2, 'c3':c3, 'c4':c4, 'c5':c5, 'rcv_row': curr_r})
                 curr_r += 1
 
         # =========================================================================
-        # 🎯 미입고 시트 직주입 및 자동 정렬 마스터 로직
+        # 🎯 미입고 시트 직주입 & RCV Check 1:1 다이렉트 연동
         # =========================================================================
         if '미입고' in wb.sheetnames:
             ws_mi = wb['미입고']
-            
-            # 1. 수식(D, G~L 등)은 완벽히 보호하고 데이터 들어갈 열(A, B, C, E, F)만 부분 청소
             max_r = max(ws_mi.max_row, 2000)
+            
+            # 주입할 열만 부분 청소
             for r in range(2, max_r + 1):
                 ws_mi.cell(row=r, column=1).value = None # A: 업체ID
                 ws_mi.cell(row=r, column=2).value = None # B: 업체명
@@ -340,20 +341,23 @@ async def process_step2(event):
                 ws_mi.cell(row=r, column=5).value = None # E: SKU명
                 ws_mi.cell(row=r, column=6).value = None # F: 입고수량
             
-            # 2. 업체명(c2)을 기준으로 가나다순 깔끔하게 정렬
+            # 1. 업체명 기준 가나다 정렬
             rcv_rows.sort(key=lambda x: str(x['c2']))
             
-            # 3. 정렬된 데이터를 미입고 시트에 직주입
+            # 2. 미입고 시트 주입
             curr_mi_row = 2
             for item in rcv_rows:
-                ws_mi.cell(row=curr_mi_row, column=1, value=item['c1']) # A열: 업체ID
-                ws_mi.cell(row=curr_mi_row, column=2, value=item['c2']) # B열: 업체명
-                ws_mi.cell(row=curr_mi_row, column=3, value=item['c4']) # C열: SKUID
-                ws_mi.cell(row=curr_mi_row, column=5, value=item['c5']) # E열: SKU명
-                ws_mi.cell(row=curr_mi_row, column=6, value=item['c6']) # F열: 입고수량
+                ws_mi.cell(row=curr_mi_row, column=1, value=item['c1']) 
+                ws_mi.cell(row=curr_mi_row, column=2, value=item['c2']) 
+                ws_mi.cell(row=curr_mi_row, column=3, value=item['c4']) 
+                ws_mi.cell(row=curr_mi_row, column=5, value=item['c5']) 
+                
+                # 💡 핵심 패치! 미입고 시트의 수량 칸은 RCV Check 시트의 수량 칸을 거울처럼 1:1 참조!
+                ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_row']}") 
+                
                 curr_mi_row += 1
                 
-            # 4. 마지막에 필터 깔끔하게 장착 (엑셀 열고 L열 체크만 해제하면 끝!)
+            # 필터 씌우기
             ws_mi.auto_filter.ref = f"A1:{get_column_letter(ws_mi.max_column)}{max(curr_mi_row, ws_mi.max_row)}"
         # =========================================================================
 
