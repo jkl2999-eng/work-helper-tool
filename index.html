@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v4.6)</h2>
+    <h2>🚀 리시브 마감 자동화 (v4.7 - 수식 강제 주입)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -79,39 +79,22 @@ def clean_text(val):
     return val
 
 def to_numeric_if_pure_digits(val):
-    if pd.isna(val):
-        return ""
+    if pd.isna(val): return ""
     val_str = str(val).strip()
     val_str = ILLEGAL_CHARACTERS_RE.sub(' ', val_str)
-    
     try:
         if '.' in val_str:
             f_val = float(val_str)
-            if f_val.is_integer():
-                return int(f_val)
+            if f_val.is_integer(): return int(f_val)
             return f_val
         elif val_str.isdigit():
             return int(val_str)
-    except:
-        pass
+    except: pass
     return val_str
-
-def match_sku_t_type(val, target_type):
-    if pd.isna(val): return ""
-    val_str = str(val).strip()
-    if '.' in val_str:
-        val_str = val_str.split('.')[0]
-    if not val_str: return ""
-    try:
-        return target_type(val_str)
-    except:
-        return val_str
 
 async def get_df(elem_id):
     file_el = document.getElementById(elem_id)
-    if not file_el.files or file_el.files.length == 0:
-        return None
-    
+    if not file_el.files or file_el.files.length == 0: return None
     file = file_el.files.item(0)
     file_name = file.name.lower()
     array_buf = await file.arrayBuffer()
@@ -121,8 +104,7 @@ async def get_df(elem_id):
         if file_name.endswith('.xlsx'):
             return pd.read_excel(py_data, engine='openpyxl').dropna(how='all')
         elif file_name.endswith('.csv'):
-            try:
-                return pd.read_csv(py_data, encoding='utf-8', low_memory=False).dropna(how='all')
+            try: return pd.read_csv(py_data, encoding='utf-8', low_memory=False).dropna(how='all')
             except:
                 py_data.seek(0)
                 return pd.read_csv(py_data, encoding='cp949', low_memory=False).dropna(how='all')
@@ -136,11 +118,9 @@ async def get_df(elem_id):
 def fill_safe_logic(ws, df_source, limit_col):
     for r in range(2, ws.max_row + 1):
         ws.row_dimensions[r].hidden = False
-
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=limit_col):
         for cell in row:
-            if cell.data_type != 'f': 
-                cell.value = None
+            if cell.data_type != 'f': cell.value = None
     
     headers = {str(ws.cell(1, c).value).strip().upper().replace(" ", ""): c for c in range(1, limit_col + 1)}
     for r_idx, row_dict in enumerate(df_source.to_dict('records'), 2):
@@ -157,25 +137,19 @@ async def process_step1(event):
     global wb, df_ts_global, temp_col_global
     status = document.getElementById("status")
     sku_div = document.getElementById("sku_result")
-    
     status.innerHTML = "⏳ 1단계 공정 시작 중..."
     status.style.backgroundColor = "#fff3cd"
     sku_div.style.display = "none"
 
     try:
         target_el = document.getElementById("target_file")
-        if not target_el.files or target_el.files.length == 0:
-            raise Exception("1. 마감 양식 파일을 선택해주세요.")
-            
+        if not target_el.files or target_el.files.length == 0: raise Exception("1. 마감 양식 파일을 선택해주세요.")
         df_target_raw = await target_el.files.item(0).arrayBuffer()
         df_ts = await get_df("ts_file")
-        
-        if df_ts is None:
-            raise Exception("2. TruckShipment 파일을 선택해주세요.")
+        if df_ts is None: raise Exception("2. TruckShipment 파일을 선택해주세요.")
 
         df_ts.columns = [str(c).strip().upper().replace(" ", "") for c in df_ts.columns]
         df_ts_global = df_ts
-
         wb = openpyxl.load_workbook(io.BytesIO(df_target_raw.to_py()), keep_links=False)
         
         ws_ts = wb['TruckShipment']
@@ -185,8 +159,7 @@ async def process_step1(event):
         master_sku_ids = set()
         for r in range(2, ws_sku_t.max_row + 1):
             val = ws_sku_t.cell(row=r, column=1).value
-            if val is not None:
-                master_sku_ids.add(str(val).strip())
+            if val is not None: master_sku_ids.add(str(val).strip())
 
         id_col = next((c for c in df_ts.columns if any(k in c for k in ["SKUID", "SKU_ID", "상품ID", "상품코드"])), None)
         temp_col = next((c for c in df_ts.columns if any(k in c for k in ["온도", "구분", "TEMP"])), None)
@@ -196,14 +169,10 @@ async def process_step1(event):
         if id_col:
             all_source_ids = df_ts[id_col].dropna().unique().tolist()
             for x in all_source_ids:
-                try:
-                    val_str = str(int(float(x)))
-                except:
-                    val_str = str(x).strip()
-                
+                try: val_str = str(int(float(x)))
+                except: val_str = str(x).strip()
                 if val_str and (val_str not in master_sku_ids):
-                    if val_str not in found_ids:
-                        found_ids.append(val_str)
+                    if val_str not in found_ids: found_ids.append(val_str)
 
         id_string = ", ".join(found_ids) if found_ids else ""
 
@@ -211,22 +180,16 @@ async def process_step1(event):
         if found_ids:
             sku_div.innerHTML = f"""
                 📢 <b>New SKU 발견 리스트:</b><br>
-                <div style="background: white; padding: 10px; margin: 10px 0; border: 1px solid #fbc02d; word-break: break-all; max-height: 100px; overflow-y: auto;">
-                    {id_string}
-                </div>
-                <button id="copy_btn" style="padding: 8px 15px; font-size: 14px; background-color: #fbc02d; color: #333; width: auto; margin-bottom: 10px;">
-                    📋 SKU ID 복사하기
-                </button>
+                <div style="background: white; padding: 10px; margin: 10px 0; border: 1px solid #fbc02d; word-break: break-all; max-height: 100px; overflow-y: auto;">{id_string}</div>
+                <button id="copy_btn" style="padding: 8px 15px; font-size: 14px; background-color: #fbc02d; color: #333; width: auto; margin-bottom: 10px;">📋 SKU ID 복사하기</button>
                 <div class="sku-count">👉 총 {len(found_ids)}개의 New SKU가 발견되었습니다.</div>
             """
-            
             def copy_to_clipboard(e):
                 window.navigator.clipboard.writeText(id_string)
                 window.alert("SKU ID 리스트가 복사되었습니다! WMS에서 조회 후 마스터 데이터를 다운받으세요.")
                 document.getElementById("step2_area").style.display = "block"
                 document.getElementById("status").innerHTML = "✅ 1단계 완료! 2단계 파일들을 업로드한 후 마감 완료 버튼을 눌러주세요."
                 document.getElementById("status").style.backgroundColor = "#e3f2fd"
-                
             document.getElementById("copy_btn").onclick = copy_to_clipboard
             status.innerHTML = "⚠️ New SKU가 있습니다! 복사 버튼을 눌러 마스터 데이터를 다운받고 2단계를 진행하세요."
         else:
@@ -246,8 +209,7 @@ async def process_step2(event):
     status.style.backgroundColor = "#fff3cd"
 
     try:
-        if wb is None:
-            raise Exception("1단계 장부가 메모리에 없습니다. 1단계를 먼저 완료해주세요.")
+        if wb is None: raise Exception("1단계 장부가 메모리에 없습니다. 1단계를 먼저 완료해주세요.")
 
         df_sku_t_add = await get_df("sku_t_add_file")
         df_check = await get_df("check_file")
@@ -256,59 +218,41 @@ async def process_step2(event):
         if df_sku_t_add is not None and 'SKU_T' in wb.sheetnames:
             ws_sku_t = wb['SKU_T']
             last_row = ws_sku_t.max_row
-            
             df_sku_t_add.columns = [str(c).strip().upper().replace(" ", "") for c in df_sku_t_add.columns]
             sku_t_headers = {str(ws_sku_t.cell(1, c).value).strip().upper().replace(" ", ""): c for c in range(1, 72)} 
-            
             for r_idx, row_dict in enumerate(df_sku_t_add.to_dict('records'), 1):
                 target_row = last_row + r_idx
                 for col_name, val in row_dict.items():
                     if col_name in sku_t_headers:
                         cell = ws_sku_t.cell(row=target_row, column=sku_t_headers[col_name])
-                        if any(k in col_name for k in ["ID", "SKU", "코드"]):
-                            cell.value = to_numeric_if_pure_digits(val)
-                        else:
-                            cell.value = clean_text(val) if pd.notna(val) else ""
+                        if any(k in col_name for k in ["ID", "SKU", "코드"]): cell.value = to_numeric_if_pure_digits(val)
+                        else: cell.value = clean_text(val) if pd.notna(val) else ""
 
         ws_sku_t = wb['SKU_T']
-        sku_t_type = str
-        if ws_sku_t.max_row >= 2:
-            sample_val = ws_sku_t.cell(row=2, column=1).value
-            if sample_val is not None:
-                if isinstance(sample_val, int): sku_t_type = int
-                elif isinstance(sample_val, float): sku_t_type = float
-
         sku_to_temp = {}
         for r in range(2, ws_sku_t.max_row + 1):
             s_id = ws_sku_t.cell(row=r, column=1).value
             t_val = ws_sku_t.cell(row=r, column=59).value
-            if s_id is not None:
-                sku_to_temp[str(s_id).strip()] = str(t_val).strip() if t_val is not None else ""
+            if s_id is not None: sku_to_temp[str(s_id).strip()] = str(t_val).strip() if t_val is not None else ""
 
         if df_check is not None:
             df_check.columns = [str(c).strip().upper().replace(" ", "") for c in df_check.columns]
             fill_safe_logic(wb['검품 내역'], df_check, wb['검품 내역'].max_column)
 
-        # 💡 [핵심 패치] 파이썬 네이티브 PO 매입수량 합산 엔진!
+        # 💡 파이썬 네이티브 PO 매입수량 합산
         po_qty_dict = {}
         if df_po is not None:
             df_po.columns = [str(c).strip().upper().replace(" ", "") for c in df_po.columns]
             fill_safe_logic(wb['PO_SKU_LIST'], df_po, 55)
-            
             p_sku_col = next((c for c in df_po.columns if "SKUID" in c), None)
             p_qty_col = next((c for c in df_po.columns if c == "발주수량"), None)
-            
             if p_sku_col and p_qty_col:
                 for _, row in df_po.iterrows():
-                    raw_sku = row[p_sku_col]
-                    sku_val = to_numeric_if_pure_digits(raw_sku)
-                    sku_key = str(sku_val).strip()
+                    sku_key = str(to_numeric_if_pure_digits(row[p_sku_col])).strip()
                     try:
                         qty = float(row[p_qty_col])
-                        if pd.notna(qty):
-                            po_qty_dict[sku_key] = po_qty_dict.get(sku_key, 0) + qty
-                    except:
-                        pass
+                        if pd.notna(qty): po_qty_dict[sku_key] = po_qty_dict.get(sku_key, 0) + qty
+                    except: pass
 
         ws_ts_sheet = wb['TruckShipment']
         ts_qty_col_letter = None
@@ -330,124 +274,75 @@ async def process_step2(event):
 
         curr_r = 2
         rcv_rows = []
-        
         if df_ts_global is not None:
             id_col_name = next((c for c in df_ts_global.columns if any(k in c for k in ["SKUID", "SKU_ID", "상품ID", "상품코드"])), None)
             for idx, row in enumerate(df_ts_global.to_dict('records'), 2):
-                raw_sku = row.get(id_col_name, "")
-                sku_val = to_numeric_if_pure_digits(raw_sku)
+                sku_val = to_numeric_if_pure_digits(row.get(id_col_name, ""))
                 sku_key = str(sku_val).strip()
-                
                 if "냉동" in sku_to_temp.get(sku_key, ""):
                     c1 = to_numeric_if_pure_digits(get_val(row, ["업체ID"], df_ts_global.columns))
                     c2 = clean_text(str(get_val(row, ["업체명"], df_ts_global.columns)))
                     c3 = to_numeric_if_pure_digits(get_val(row, ["발주번호"], df_ts_global.columns))
-                    c4 = sku_val
                     c5 = clean_text(str(get_val(row, ["상품명", "SKU명", "SKU이름"], df_ts_global.columns)))
-                    c6 = f"=TruckShipment!{ts_qty_col_letter}{idx}"
-                    
                     ws_rcv.cell(curr_r, 1, c1)
                     ws_rcv.cell(curr_r, 2, c2)
                     ws_rcv.cell(curr_r, 3, c3)
-                    ws_rcv.cell(curr_r, 4, c4)
+                    ws_rcv.cell(curr_r, 4, sku_val)
                     ws_rcv.cell(curr_r, 5, c5)
-                    ws_rcv.cell(curr_r, 6, c6)
-                    
-                    rcv_rows.append({'c1':c1, 'c2':c2, 'c3':c3, 'c4':c4, 'c5':c5, 'rcv_row': curr_r})
+                    ws_rcv.cell(curr_r, 6, f"=TruckShipment!{ts_qty_col_letter}{idx}")
+                    rcv_rows.append({'c1':c1, 'c2':c2, 'c4':sku_val, 'c5':c5, 'rcv_row': curr_r})
                     curr_r += 1
 
-        if df_po is not None:
-            p_temp = next((c for c in df_po.columns if "온도" in c), None)
-            p_type = next((c for c in df_po.columns if "운송" in c or "밀크런" in c), None)
-            po_f = df_po
-            if p_temp: po_f = po_f[po_f[p_temp].astype(str).str.contains('냉동', na=False)]
-            if p_type: po_f = po_f[po_f[p_type].astype(str).str.contains('밀크런', na=False)]
-            for _, row in po_f.iterrows():
-                c1 = to_numeric_if_pure_digits(get_val(row, ["업체ID"], po_f.columns))
-                c2 = clean_text(str(get_val(row, ["업체명"], po_f.columns)))
-                c3 = to_numeric_if_pure_digits(get_val(row, ["발주번호"], po_f.columns))
-                c4 = to_numeric_if_pure_digits(get_val(row, ["SKUID"], po_f.columns))
-                c5 = clean_text(str(get_val(row, ["상품명", "SKU명", "SKU이름"], po_f.columns)))
-                c6 = to_numeric_if_pure_digits(get_val(row, ["업체확정"], po_f.columns))
-                
-                ws_rcv.cell(curr_r, 1, c1)
-                ws_rcv.cell(curr_r, 2, c2)
-                ws_rcv.cell(curr_r, 3, c3)
-                ws_rcv.cell(curr_r, 4, c4)
-                ws_rcv.cell(curr_r, 5, c5)
-                ws_rcv.cell(curr_r, 6, c6)
-                
-                rcv_rows.append({'c1':c1, 'c2':c2, 'c3':c3, 'c4':c4, 'c5':c5, 'rcv_row': curr_r})
-                curr_r += 1
-
         # =========================================================================
-        # 🎯 미입고 시트 직주입 
+        # 🎯 미입고 시트 직주입 (v4.7 절대 수식 강제 주입 모드)
         # =========================================================================
         if '미입고' in wb.sheetnames:
             ws_mi = wb['미입고']
             
-            # 수식 양식 추출
-            formulas_model = {}
-            for c in range(1, ws_mi.max_column + 1):
-                cell_val = ws_mi.cell(row=2, column=c).value
-                if cell_val and str(cell_val).startswith('='):
-                    formulas_model[c] = str(cell_val)
-            
-            # 💡 [핵심 패치] 파이썬이 G열(7) 매입수량을 직접 숫자로 밀어넣을 것이므로 복사 대상에서 제외!
-            if 7 in formulas_model:
-                del formulas_model[7]
-            
-            # 청소
+            # 1. 2행부터 밑으로 흔적도 없이 싹 청소 (고장난 수식 박멸)
             max_clear = max(ws_mi.max_row, 2000)
             for r in range(2, max_clear + 1):
                 for c in range(1, ws_mi.max_column + 1):
                     ws_mi.cell(row=r, column=c).value = None 
             
-            # 그룹화
+            # 2. RCV Check 데이터 묶기 (중복 SKU 합산용)
             grouped_data = {}
             for item in rcv_rows:
                 key = (item['c1'], item['c2'], item['c4'], item['c5'])
-                if key not in grouped_data:
-                    grouped_data[key] = []
+                if key not in grouped_data: grouped_data[key] = []
                 grouped_data[key].append(item['rcv_row'])
                 
             unique_rows = []
             for key, rows in grouped_data.items():
-                unique_rows.append({
-                    'c1': key[0], 'c2': key[1], 'c4': key[2], 'c5': key[3], 'rcv_rows': rows
-                })
+                unique_rows.append({'c1': key[0], 'c2': key[1], 'c4': key[2], 'c5': key[3], 'rcv_rows': rows})
             
+            # 3. 가나다 정렬
             unique_rows.sort(key=lambda x: str(x['c2']))
             
-            # 주입
+            # 4. 파이썬의 무적 수식 강제 주입
             curr_mi_row = 2
             for item in unique_rows:
+                # A, B, C, E열 (기본 정보)
                 ws_mi.cell(row=curr_mi_row, column=1, value=item['c1']) 
                 ws_mi.cell(row=curr_mi_row, column=2, value=item['c2']) 
-                
-                final_sku = match_sku_t_type(item['c4'], sku_t_type)
-                ws_mi.cell(row=curr_mi_row, column=3, value=final_sku) 
-                
+                ws_mi.cell(row=curr_mi_row, column=3, value=item['c4']) 
                 ws_mi.cell(row=curr_mi_row, column=5, value=item['c5']) 
                 
-                if len(item['rcv_rows']) == 1:
-                    ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_rows'][0]}")
-                else:
-                    refs = [f"'RCV Check'!F{r}" for r in item['rcv_rows']]
-                    sum_formula = "=SUM(" + ",".join(refs) + ")"
-                    ws_mi.cell(row=curr_mi_row, column=6, value=sum_formula) 
+                # D열 (바코드): 고장난 양식을 무시하고 파이썬이 완벽한 VLOOKUP을 만들어서 강제 주입!
+                ws_mi.cell(row=curr_mi_row, column=4, value=f'=IFERROR(VLOOKUP(C{curr_mi_row},SKU_T!A:C,3,0),"")')
                 
-                # 💡 [핵심 패치] 파이썬 네이티브 매입수량 다이렉트 주입!
+                # F열 (입고수량): 에러 방지용 SUM 묶음 주입
+                if len(item['rcv_rows']) == 1: ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_rows'][0]}")
+                else: ws_mi.cell(row=curr_mi_row, column=6, value="=SUM(" + ",".join([f"'RCV Check'!F{r}" for r in item['rcv_rows']]) + ")")
+                
+                # G열 (매입수량): 파이썬이 완벽하게 덧셈 끝낸 순수 숫자값 다이렉트 주입!
                 sku_str_key = str(item['c4']).strip()
                 po_qty = po_qty_dict.get(sku_str_key, 0)
                 if float(po_qty).is_integer(): po_qty = int(po_qty)
                 ws_mi.cell(row=curr_mi_row, column=7, value=po_qty)
                 
-                # 나머지 수식 복사
-                for c_idx, formula_template in formulas_model.items():
-                    if c_idx not in [1, 2, 3, 5, 6, 7]: 
-                        converted_formula = re.sub(r'(?<!\$)\b2\b', str(curr_mi_row), formula_template)
-                        ws_mi.cell(row=curr_mi_row, column=c_idx, value=converted_formula)
+                # L열 (GAP): 고장날 염려가 없는 절대 공식 강제 주입!
+                ws_mi.cell(row=curr_mi_row, column=12, value=f'=IF(H{curr_mi_row}="미검품",0,IF(F{curr_mi_row}="","",F{curr_mi_row}-G{curr_mi_row}-H{curr_mi_row}-I{curr_mi_row}-J{curr_mi_row}-K{curr_mi_row}))')
                 
                 curr_mi_row += 1
                 
@@ -457,7 +352,6 @@ async def process_step2(event):
         out_buf = io.BytesIO()
         wb.save(out_buf)
         blob = Blob.new([Uint8Array.new(out_buf.getvalue())], { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })
-        
         link = document.getElementById("download_link")
         link.href = URL.createObjectURL(blob)
         link.download = f"리시브_마감_최종_{pd.Timestamp.now().strftime('%m%d_%H%M')}.xlsx"
