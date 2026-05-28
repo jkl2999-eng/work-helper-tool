@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v4.1)</h2>
+    <h2>🚀 리시브 마감 자동화 (v4.2)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -78,6 +78,26 @@ def clean_text(val):
         return ILLEGAL_CHARACTERS_RE.sub(' ', val)
     return val
 
+# 🎯 [핵심 추가] VLOOKUP 연동 깨짐 방지를 위한 스마트 숫자 변환기
+def to_numeric_if_pure_digits(val):
+    if pd.isna(val):
+        return ""
+    val_str = str(val).strip()
+    val_str = ILLEGAL_CHARACTERS_RE.sub(' ', val_str)
+    
+    try:
+        # 소수점 .0 구조로 들어오는 경우 우회 처리 (예: "12345.0")
+        if '.' in val_str:
+            f_val = float(val_str)
+            if f_val.is_integer():
+                return int(f_val)
+            return f_val
+        elif val_str.isdigit():
+            return int(val_str)
+    except:
+        pass
+    return val_str
+
 async def get_df(elem_id):
     file_el = document.getElementById(elem_id)
     if not file_el.files or file_el.files.length == 0:
@@ -119,7 +139,11 @@ def fill_safe_logic(ws, df_source, limit_col):
             if col_name in headers:
                 cell = ws.cell(r_idx, headers[col_name])
                 if cell.data_type != 'f':
-                    cell.value = clean_text(val) if pd.notna(val) else ""
+                    # 일반 텍스트열 외 코드성 데이터 자동 숫자 변환 처리
+                    if any(k in col_name for k in ["ID", "SKU", "발주", "코드"]):
+                        cell.value = to_numeric_if_pure_digits(val)
+                    else:
+                        cell.value = clean_text(val) if pd.notna(val) else ""
 
 async def process_step1(event):
     global wb, df_ts_global, temp_col_global
@@ -233,7 +257,10 @@ async def process_step2(event):
                 for col_name, val in row_dict.items():
                     if col_name in sku_t_headers:
                         cell = ws_sku_t.cell(row=target_row, column=sku_t_headers[col_name])
-                        cell.value = clean_text(val) if pd.notna(val) else ""
+                        if any(k in col_name for k in ["ID", "SKU", "코드"]):
+                            cell.value = to_numeric_if_pure_digits(val)
+                        else:
+                            cell.value = clean_text(val) if pd.notna(val) else ""
 
         ws_sku_t = wb['SKU_T']
         sku_to_temp = {}
@@ -241,11 +268,7 @@ async def process_step2(event):
             s_id = ws_sku_t.cell(row=r, column=1).value
             t_val = ws_sku_t.cell(row=r, column=59).value
             if s_id is not None:
-                try:
-                    s_id_str = str(int(float(s_id))).strip()
-                except:
-                    s_id_str = str(s_id).strip()
-                sku_to_temp[s_id_str] = str(t_val).strip() if t_val is not None else ""
+                sku_to_temp[str(s_id).strip()] = str(t_val).strip() if t_val is not None else ""
 
         if df_check is not None:
             df_check.columns = [str(c).strip().upper().replace(" ", "") for c in df_check.columns]
@@ -280,15 +303,15 @@ async def process_step2(event):
             id_col_name = next((c for c in df_ts_global.columns if any(k in c for k in ["SKUID", "SKU_ID", "상품ID", "상품코드"])), None)
             for idx, row in enumerate(df_ts_global.to_dict('records'), 2):
                 raw_sku = row.get(id_col_name, "")
-                try: sku_str = str(int(float(raw_sku))).strip()
-                except: sku_str = str(raw_sku).strip()
+                sku_val = to_numeric_if_pure_digits(raw_sku)
+                sku_key = str(sku_val).strip()
                 
-                if "냉동" in sku_to_temp.get(sku_str, ""):
-                    c1 = clean_text(get_val(row, ["업체ID"], df_ts_global.columns))
-                    c2 = clean_text(get_val(row, ["업체명"], df_ts_global.columns))
-                    c3 = clean_text(get_val(row, ["발주번호"], df_ts_global.columns))
-                    c4 = clean_text(sku_str)
-                    c5 = clean_text(get_val(row, ["상품명", "SKU명", "SKU이름"], df_ts_global.columns))
+                if "냉동" in sku_to_temp.get(sku_key, ""):
+                    c1 = to_numeric_if_pure_digits(get_val(row, ["업체ID"], df_ts_global.columns))
+                    c2 = clean_text(str(get_val(row, ["업체명"], df_ts_global.columns)))
+                    c3 = to_numeric_if_pure_digits(get_val(row, ["발주번호"], df_ts_global.columns))
+                    c4 = sku_val
+                    c5 = clean_text(str(get_val(row, ["상품명", "SKU명", "SKU이름"], df_ts_global.columns)))
                     c6 = f"=TruckShipment!{ts_qty_col_letter}{idx}"
                     
                     ws_rcv.cell(curr_r, 1, c1)
@@ -298,7 +321,6 @@ async def process_step2(event):
                     ws_rcv.cell(curr_r, 5, c5)
                     ws_rcv.cell(curr_r, 6, c6)
                     
-                    # 🚀 rcv_row에 RCV Check 시트의 행 번호를 기록!
                     rcv_rows.append({'c1':c1, 'c2':c2, 'c3':c3, 'c4':c4, 'c5':c5, 'rcv_row': curr_r})
                     curr_r += 1
 
@@ -309,12 +331,12 @@ async def process_step2(event):
             if p_temp: po_f = po_f[po_f[p_temp].astype(str).str.contains('냉동', na=False)]
             if p_type: po_f = po_f[po_f[p_type].astype(str).str.contains('밀크런', na=False)]
             for _, row in po_f.iterrows():
-                c1 = clean_text(get_val(row, ["업체ID"], po_f.columns))
-                c2 = clean_text(get_val(row, ["업체명"], po_f.columns))
-                c3 = clean_text(get_val(row, ["발주번호"], po_f.columns))
-                c4 = clean_text(get_val(row, ["SKUID"], po_f.columns))
-                c5 = clean_text(get_val(row, ["상품명", "SKU명", "SKU이름"], po_f.columns))
-                c6 = clean_text(get_val(row, ["업체확정"], po_f.columns))
+                c1 = to_numeric_if_pure_digits(get_val(row, ["업체ID"], po_f.columns))
+                c2 = clean_text(str(get_val(row, ["업체명"], po_f.columns)))
+                c3 = to_numeric_if_pure_digits(get_val(row, ["발주번호"], po_f.columns))
+                c4 = to_numeric_if_pure_digits(get_val(row, ["SKUID"], po_f.columns))
+                c5 = clean_text(str(get_val(row, ["상품명", "SKU명", "SKU이름"], po_f.columns)))
+                c6 = to_numeric_if_pure_digits(get_val(row, ["업체확정"], po_f.columns))
                 
                 ws_rcv.cell(curr_r, 1, c1)
                 ws_rcv.cell(curr_r, 2, c2)
@@ -327,37 +349,31 @@ async def process_step2(event):
                 curr_r += 1
 
         # =========================================================================
-        # 🎯 미입고 시트 직주입 & RCV Check 1:1 다이렉트 연동
+        # 🎯 미입고 시트 직주입 및 정밀 규격 동기화
         # =========================================================================
         if '미입고' in wb.sheetnames:
             ws_mi = wb['미입고']
             max_r = max(ws_mi.max_row, 2000)
             
-            # 주입할 열만 부분 청소
             for r in range(2, max_r + 1):
-                ws_mi.cell(row=r, column=1).value = None # A: 업체ID
-                ws_mi.cell(row=r, column=2).value = None # B: 업체명
-                ws_mi.cell(row=r, column=3).value = None # C: SKUID
-                ws_mi.cell(row=r, column=5).value = None # E: SKU명
-                ws_mi.cell(row=r, column=6).value = None # F: 입고수량
+                ws_mi.cell(row=r, column=1).value = None 
+                ws_mi.cell(row=r, column=2).value = None 
+                ws_mi.cell(row=r, column=3).value = None 
+                ws_mi.cell(row=r, column=5).value = None 
+                ws_mi.cell(row=r, column=6).value = None 
             
-            # 1. 업체명 기준 가나다 정렬
+            # 업체명 기준 정렬
             rcv_rows.sort(key=lambda x: str(x['c2']))
             
-            # 2. 미입고 시트 주입
             curr_mi_row = 2
             for item in rcv_rows:
                 ws_mi.cell(row=curr_mi_row, column=1, value=item['c1']) 
                 ws_mi.cell(row=curr_mi_row, column=2, value=item['c2']) 
-                ws_mi.cell(row=curr_mi_row, column=3, value=item['c4']) 
+                ws_mi.cell(row=curr_mi_row, column=3, value=item['c4']) # 💡 진짜 숫자 타입 주입으로 VLOOKUP 완벽 매칭!
                 ws_mi.cell(row=curr_mi_row, column=5, value=item['c5']) 
-                
-                # 💡 핵심 패치! 미입고 시트의 수량 칸은 RCV Check 시트의 수량 칸을 거울처럼 1:1 참조!
                 ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_row']}") 
-                
                 curr_mi_row += 1
                 
-            # 필터 씌우기
             ws_mi.auto_filter.ref = f"A1:{get_column_letter(ws_mi.max_column)}{max(curr_mi_row, ws_mi.max_row)}"
         # =========================================================================
 
