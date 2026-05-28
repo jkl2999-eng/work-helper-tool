@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v4.2)</h2>
+    <h2>🚀 리시브 마감 자동화 (v4.3)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -78,7 +78,6 @@ def clean_text(val):
         return ILLEGAL_CHARACTERS_RE.sub(' ', val)
     return val
 
-# 🎯 [핵심 추가] VLOOKUP 연동 깨짐 방지를 위한 스마트 숫자 변환기
 def to_numeric_if_pure_digits(val):
     if pd.isna(val):
         return ""
@@ -86,7 +85,6 @@ def to_numeric_if_pure_digits(val):
     val_str = ILLEGAL_CHARACTERS_RE.sub(' ', val_str)
     
     try:
-        # 소수점 .0 구조로 들어오는 경우 우회 처리 (예: "12345.0")
         if '.' in val_str:
             f_val = float(val_str)
             if f_val.is_integer():
@@ -139,7 +137,6 @@ def fill_safe_logic(ws, df_source, limit_col):
             if col_name in headers:
                 cell = ws.cell(r_idx, headers[col_name])
                 if cell.data_type != 'f':
-                    # 일반 텍스트열 외 코드성 데이터 자동 숫자 변환 처리
                     if any(k in col_name for k in ["ID", "SKU", "발주", "코드"]):
                         cell.value = to_numeric_if_pure_digits(val)
                     else:
@@ -349,7 +346,7 @@ async def process_step2(event):
                 curr_r += 1
 
         # =========================================================================
-        # 🎯 미입고 시트 직주입 및 정밀 규격 동기화
+        # 🎯 미입고 시트 직주입 및 정밀 규격 동기화 (합산 엔진 탑재)
         # =========================================================================
         if '미입고' in wb.sheetnames:
             ws_mi = wb['미입고']
@@ -362,16 +359,44 @@ async def process_step2(event):
                 ws_mi.cell(row=r, column=5).value = None 
                 ws_mi.cell(row=r, column=6).value = None 
             
-            # 업체명 기준 정렬
-            rcv_rows.sort(key=lambda x: str(x['c2']))
-            
-            curr_mi_row = 2
+            # 1. 같은 항목끼리 한 줄로 묶기 (그룹화)
+            grouped_data = {}
             for item in rcv_rows:
+                # 묶는 기준: 업체ID, 업체명, SKUID, SKU명
+                key = (item['c1'], item['c2'], item['c4'], item['c5'])
+                if key not in grouped_data:
+                    grouped_data[key] = []
+                grouped_data[key].append(item['rcv_row'])
+                
+            unique_rows = []
+            for key, rows in grouped_data.items():
+                unique_rows.append({
+                    'c1': key[0],
+                    'c2': key[1],
+                    'c4': key[2],
+                    'c5': key[3],
+                    'rcv_rows': rows
+                })
+            
+            # 2. 업체명 기준 가나다 정렬
+            unique_rows.sort(key=lambda x: str(x['c2']))
+            
+            # 3. 미입고 시트 주입
+            curr_mi_row = 2
+            for item in unique_rows:
                 ws_mi.cell(row=curr_mi_row, column=1, value=item['c1']) 
                 ws_mi.cell(row=curr_mi_row, column=2, value=item['c2']) 
-                ws_mi.cell(row=curr_mi_row, column=3, value=item['c4']) # 💡 진짜 숫자 타입 주입으로 VLOOKUP 완벽 매칭!
+                ws_mi.cell(row=curr_mi_row, column=3, value=item['c4']) 
                 ws_mi.cell(row=curr_mi_row, column=5, value=item['c5']) 
-                ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_row']}") 
+                
+                # 💡 핵심 패치! 한 SKU가 여러 번 들어왔으면 엑셀에 '+' 수식으로 완벽히 묶어서 밀어 넣음
+                if len(item['rcv_rows']) == 1:
+                    sum_formula = f"='RCV Check'!F{item['rcv_rows'][0]}"
+                else:
+                    refs = [f"'RCV Check'!F{r}" for r in item['rcv_rows']]
+                    sum_formula = "=" + "+".join(refs)
+                    
+                ws_mi.cell(row=curr_mi_row, column=6, value=sum_formula) 
                 curr_mi_row += 1
                 
             ws_mi.auto_filter.ref = f"A1:{get_column_letter(ws_mi.max_column)}{max(curr_mi_row, ws_mi.max_row)}"
