@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v5.0 - 엑셀 수식 독립 엔진)</h2>
+    <h2>🚀 리시브 마감 자동화 (v5.1 - 매입수량 타겟팅 패치)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -248,7 +248,7 @@ async def process_step2(event):
             df_check.columns = [str(c).strip().upper().replace(" ", "") for c in df_check.columns]
             fill_safe_logic(wb['검품 내역'], df_check, wb['검품 내역'].max_column)
 
-        # 💡 [핵심 패치] 파이썬 PO 계산 무적 엔진! 파일을 올리든 안 올리든 무조건 엑셀 안에서 수량을 찾아냅니다.
+        # 💡 [핵심 패치] PO_SKU_LIST에서 '발주수량' 대신 '입고수량'을 타겟팅합니다!
         po_qty_dict = {}
         if df_po is not None:
             df_po.columns = [str(c).strip().upper().replace(" ", "") for c in df_po.columns]
@@ -260,9 +260,19 @@ async def process_step2(event):
             po_qty_idx = None
             for c in range(1, ws_po.max_column + 1):
                 h = str(ws_po.cell(1, c).value).strip().replace(" ", "").upper()
-                if h in ["SKUID", "SKU_ID"]: po_sku_idx = c
-                elif h == "발주수량": po_qty_idx = c
-                
+                if h in ["SKUID", "SKU_ID"]: 
+                    po_sku_idx = c
+                elif h == "입고수량":  # 🚨 사용자가 요청한 바로 그 '입고수량'!!
+                    po_qty_idx = c
+            
+            # 혹시라도 양식에 '입고수량'이 없으면 '발주수량'을 대체재로 찾음
+            if not po_qty_idx:
+                for c in range(1, ws_po.max_column + 1):
+                    h = str(ws_po.cell(1, c).value).strip().replace(" ", "").upper()
+                    if "발주수량" in h:
+                        po_qty_idx = c
+                        break
+
             if po_sku_idx and po_qty_idx:
                 for r in range(2, ws_po.max_row + 1):
                     s_val = ws_po.cell(r, po_sku_idx).value
@@ -320,7 +330,7 @@ async def process_step2(event):
                     curr_r += 1
 
         # =========================================================================
-        # 🎯 미입고 시트 직주입 (v5.0 궁극의 데이터 안정화 버전)
+        # 🎯 미입고 시트 직주입 
         # =========================================================================
         if '미입고' in wb.sheetnames:
             ws_mi = wb['미입고']
@@ -354,13 +364,12 @@ async def process_step2(event):
                 if len(item['rcv_rows']) == 1: ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_rows'][0]}")
                 else: ws_mi.cell(row=curr_mi_row, column=6, value="=SUM(" + ",".join([f"'RCV Check'!F{r}" for r in item['rcv_rows']]) + ")")
                 
-                # 💡 [핵심 패치] 에러나고 짜증나는 엑셀 수식 완전 삭제! 파이썬이 계산해온 150(매입수량)을 그냥 꽂아버립니다.
+                # 💡 [핵심 패치] PO_SKU_LIST의 '입고수량'을 더한 값을 G열 매입수량에 순수한 숫자로 주입합니다!
                 sku_str_key = str(item['c4']).strip()
                 po_qty = po_qty_dict.get(sku_str_key, 0)
                 if float(po_qty).is_integer(): po_qty = int(po_qty)
                 ws_mi.cell(row=curr_mi_row, column=7, value=po_qty)
                 
-                # 매입수량이 숫자로 정확히 들어갔으니 GAP 수식도 아무 에러 없이 작동합니다!
                 ws_mi.cell(row=curr_mi_row, column=12, value=f'=IF(H{curr_mi_row}="미검품",0,IF(F{curr_mi_row}="","",F{curr_mi_row}-G{curr_mi_row}-H{curr_mi_row}-I{curr_mi_row}-J{curr_mi_row}-K{curr_mi_row}))')
                 
                 curr_mi_row += 1
