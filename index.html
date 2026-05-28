@@ -24,7 +24,7 @@
 <body>
 
 <div class="container">
-    <h2>🚀 리시브 마감 자동화 (v5.1 - 매입수량 타겟팅 패치)</h2>
+    <h2>🚀 리시브 마감 자동화 (v5.2 - 중복 가짜열 차단 패치)</h2>
     <div id="status">✅ 준비 완료! 1단계 파일을 먼저 선택해 주세요.</div>
 
     <div class="file-box">
@@ -248,7 +248,9 @@ async def process_step2(event):
             df_check.columns = [str(c).strip().upper().replace(" ", "") for c in df_check.columns]
             fill_safe_logic(wb['검품 내역'], df_check, wb['검품 내역'].max_column)
 
-        # 💡 [핵심 패치] PO_SKU_LIST에서 '발주수량' 대신 '입고수량'을 타겟팅합니다!
+        # =================================================================================
+        # 💡 [핵심 패치 5.2] PO_SKU_LIST 가짜열 방어 시스템 (첫 번째 발견 시 Lock 기능 추가!)
+        # =================================================================================
         po_qty_dict = {}
         if df_po is not None:
             df_po.columns = [str(c).strip().upper().replace(" ", "") for c in df_po.columns]
@@ -258,18 +260,19 @@ async def process_step2(event):
             ws_po = wb['PO_SKU_LIST']
             po_sku_idx = None
             po_qty_idx = None
+            
+            # 뒤쪽에 숨어있는 가짜 SKU ID 열을 덮어쓰지 않도록 'po_sku_idx is None'일 때만 확정합니다.
             for c in range(1, ws_po.max_column + 1):
                 h = str(ws_po.cell(1, c).value).strip().replace(" ", "").upper()
-                if h in ["SKUID", "SKU_ID"]: 
+                if h in ["SKUID", "SKU_ID"] and po_sku_idx is None: 
                     po_sku_idx = c
-                elif h == "입고수량":  # 🚨 사용자가 요청한 바로 그 '입고수량'!!
+                elif h == "입고수량" and po_qty_idx is None: 
                     po_qty_idx = c
             
-            # 혹시라도 양식에 '입고수량'이 없으면 '발주수량'을 대체재로 찾음
             if not po_qty_idx:
                 for c in range(1, ws_po.max_column + 1):
                     h = str(ws_po.cell(1, c).value).strip().replace(" ", "").upper()
-                    if "발주수량" in h:
+                    if "발주수량" in h and po_qty_idx is None:
                         po_qty_idx = c
                         break
 
@@ -280,7 +283,9 @@ async def process_step2(event):
                     if s_val is not None and q_val is not None:
                         sku_key = str(to_numeric_if_pure_digits(s_val)).strip()
                         try:
-                            q = float(q_val)
+                            # 혹시 1,500 처럼 쉼표가 있어도 싹 무시하고 완벽하게 숫자로 바꿉니다.
+                            q_str = str(q_val).replace(',', '').strip()
+                            q = float(q_str)
                             po_qty_dict[sku_key] = po_qty_dict.get(sku_key, 0) + q
                         except: pass
 
@@ -329,9 +334,6 @@ async def process_step2(event):
                     rcv_rows.append({'c1':c1, 'c2':c2, 'c4':sku_val, 'c5':c5, 'rcv_row': curr_r})
                     curr_r += 1
 
-        # =========================================================================
-        # 🎯 미입고 시트 직주입 
-        # =========================================================================
         if '미입고' in wb.sheetnames:
             ws_mi = wb['미입고']
             
@@ -364,7 +366,6 @@ async def process_step2(event):
                 if len(item['rcv_rows']) == 1: ws_mi.cell(row=curr_mi_row, column=6, value=f"='RCV Check'!F{item['rcv_rows'][0]}")
                 else: ws_mi.cell(row=curr_mi_row, column=6, value="=SUM(" + ",".join([f"'RCV Check'!F{r}" for r in item['rcv_rows']]) + ")")
                 
-                # 💡 [핵심 패치] PO_SKU_LIST의 '입고수량'을 더한 값을 G열 매입수량에 순수한 숫자로 주입합니다!
                 sku_str_key = str(item['c4']).strip()
                 po_qty = po_qty_dict.get(sku_str_key, 0)
                 if float(po_qty).is_integer(): po_qty = int(po_qty)
@@ -375,7 +376,6 @@ async def process_step2(event):
                 curr_mi_row += 1
                 
             ws_mi.auto_filter.ref = f"A1:{get_column_letter(ws_mi.max_column)}{max(curr_mi_row-1, 1)}"
-        # =========================================================================
 
         out_buf = io.BytesIO()
         wb.save(out_buf)
